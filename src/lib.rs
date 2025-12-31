@@ -306,8 +306,32 @@ impl PixelData {
         }
     }
 
+    pub fn read<P: AsRef<Path>>(path: P) -> io::Result<Vec<u16>> {
+        let mut file = File::open(path)?;
+
+        let len = file.metadata()?.len();
+        let len = if len % 2 == 0 {
+            usize::try_from(len / 2)
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "File is too large"))?
+        } else {
+            return Err(io::Error::new(io::ErrorKind::Other, "Length is odd"));
+        };
+
+        let mut vec = vec![0u16; len];
+
+        let slice: &mut [u8] = Self::to_u8_slice(&mut vec);
+
+        file.read_exact(slice)?;
+        Ok(vec)
+    }
+
+    fn to_u8_slice(slice: &mut [u16]) -> &mut [u8] {
+        let byte_len = 2 * slice.len();
+        unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr().cast::<u8>(), byte_len) }
+    }
+
     fn from_bytes<T: MetaElement>(
-        raw: &[u8],
+        raw: Vec<u8>,
         shape: &[usize],
         msb: bool,
     ) -> Result<Self, MetaImageError>
@@ -321,15 +345,21 @@ impl PixelData {
             ));
         }
 
-        let mut values = Vec::with_capacity(shape.iter().product());
-        for chunk in raw.chunks(bytes_per_elem) {
-            let value = if msb {
-                T::from_be(chunk)
-            } else {
-                T::from_le(chunk)
-            };
-            values.push(value);
-        }
+        #[cfg(target_endian = "little")]
+        let values = if msb {
+            unimplemented!("endianness conversion not implemented yet");
+        } else {
+            let len = raw.len() / bytes_per_elem;
+            // SAFETY: Vec<u8> is properly sized, and T is Pod (MetaElement is only implemented for Pod types)
+            let boxed = raw.into_boxed_slice();
+            let ptr = Box::into_raw(boxed) as *mut T;
+            let values = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
+            let values: Vec<T> = values.into_vec();
+            values
+        };
+
+        #[cfg(target_endian = "big")]
+        unimplemented!("endianness conversion not implemented yet");
 
         let array = ArrayD::from_shape_vec(IxDyn(shape), values)
             .map_err(|err| MetaImageError::Shape(format!("{err}")))?;
@@ -337,65 +367,26 @@ impl PixelData {
     }
 }
 
-impl From<ArrayD<u8>> for PixelData {
-    fn from(value: ArrayD<u8>) -> Self {
-        Self::U8(value)
-    }
+macro_rules! impl_from_arrayd {
+    ($ty:ty, $variant:ident) => {
+        impl From<ArrayD<$ty>> for PixelData {
+            fn from(value: ArrayD<$ty>) -> Self {
+                Self::$variant(value)
+            }
+        }
+    };
 }
 
-impl From<ArrayD<i8>> for PixelData {
-    fn from(value: ArrayD<i8>) -> Self {
-        Self::I8(value)
-    }
-}
-
-impl From<ArrayD<u64>> for PixelData {
-    fn from(value: ArrayD<u64>) -> Self {
-        Self::U64(value)
-    }
-}
-
-impl From<ArrayD<i64>> for PixelData {
-    fn from(value: ArrayD<i64>) -> Self {
-        Self::I64(value)
-    }
-}
-
-impl From<ArrayD<u16>> for PixelData {
-    fn from(value: ArrayD<u16>) -> Self {
-        Self::U16(value)
-    }
-}
-
-impl From<ArrayD<i16>> for PixelData {
-    fn from(value: ArrayD<i16>) -> Self {
-        Self::I16(value)
-    }
-}
-
-impl From<ArrayD<u32>> for PixelData {
-    fn from(value: ArrayD<u32>) -> Self {
-        Self::U32(value)
-    }
-}
-
-impl From<ArrayD<i32>> for PixelData {
-    fn from(value: ArrayD<i32>) -> Self {
-        Self::I32(value)
-    }
-}
-
-impl From<ArrayD<f32>> for PixelData {
-    fn from(value: ArrayD<f32>) -> Self {
-        Self::F32(value)
-    }
-}
-
-impl From<ArrayD<f64>> for PixelData {
-    fn from(value: ArrayD<f64>) -> Self {
-        Self::F64(value)
-    }
-}
+impl_from_arrayd!(u8, U8);
+impl_from_arrayd!(i8, I8);
+impl_from_arrayd!(u16, U16);
+impl_from_arrayd!(i16, I16);
+impl_from_arrayd!(u32, U32);
+impl_from_arrayd!(i32, I32);
+impl_from_arrayd!(u64, U64);
+impl_from_arrayd!(i64, I64);
+impl_from_arrayd!(f32, F32);
+impl_from_arrayd!(f64, F64);
 
 /// In-memory MetaImage representation.
 #[derive(Debug, Clone)]
@@ -406,7 +397,13 @@ pub struct MetaImage {
     pub element_type: ElementType,
     pub element_byte_order_msb: bool,
     pub header_size: isize,
+    pub optional_tags: Vec<(String, String)>,
     pub data: PixelData,
+}
+
+#[derive(Debug, Clone)]
+pub struct WriteOption {
+    pub use_compression: bool,
 }
 
 impl MetaImage {
@@ -425,6 +422,7 @@ impl MetaImage {
             element_type: T::ELEMENT_TYPE,
             element_byte_order_msb: cfg!(target_endian = "big"),
             header_size: 0,
+            optional_tags: Vec::new(),
             data: PixelData::from(array),
         }
     }
@@ -440,11 +438,15 @@ impl MetaImage {
             .iter()
             .try_fold(1usize, |acc, v| acc.checked_mul(*v).ok_or("overflow"))
             .map_err(|_| MetaImageError::Shape("dim_size product overflow".into()))?;
-        let expected_bytes = element_count
-            .checked_mul(header.element_type.byte_len())
-            .ok_or_else(|| MetaImageError::Shape("byte size overflow".into()))?;
+        let expected_bytes = if let Some(compressed_size) = header.compressed_size {
+            compressed_size
+        } else {
+            element_count
+                .checked_mul(header.element_type.byte_len())
+                .ok_or_else(|| MetaImageError::Shape("byte size overflow".into()))?
+        };
 
-        let raw_data = if header.element_data_file.eq_ignore_ascii_case("LOCAL") {
+        let mut raw_data = if header.element_data_file.eq_ignore_ascii_case("LOCAL") {
             let start = inline_offset
                 .ok_or_else(|| MetaImageError::Parse("inline data offset missing".into()))?;
             if file_bytes.len() < start + expected_bytes {
@@ -457,55 +459,61 @@ impl MetaImage {
             let data_path = resolve_data_path(path, &header.element_data_file);
             read_raw_data(&data_path, header.header_size, expected_bytes)?
         };
+        if header.compressed_size.is_some() {
+            let mut decoder = flate2::read::ZlibDecoder::new(&raw_data[..]);
+            let mut decompressed_data = Vec::new();
+            decoder.read_to_end(&mut decompressed_data)?;
+            raw_data = decompressed_data;
+        }
 
         let data = match header.element_type {
             ElementType::UChar => PixelData::from_bytes::<u8>(
-                &raw_data,
+                raw_data,
                 &header.dim_size,
                 header.element_byte_order_msb,
             )?,
             ElementType::Char => PixelData::from_bytes::<i8>(
-                &raw_data,
+                raw_data,
                 &header.dim_size,
                 header.element_byte_order_msb,
             )?,
             ElementType::UShort => PixelData::from_bytes::<u16>(
-                &raw_data,
+                raw_data,
                 &header.dim_size,
                 header.element_byte_order_msb,
             )?,
             ElementType::Short => PixelData::from_bytes::<i16>(
-                &raw_data,
+                raw_data,
                 &header.dim_size,
                 header.element_byte_order_msb,
             )?,
             ElementType::UInt => PixelData::from_bytes::<u32>(
-                &raw_data,
+                raw_data,
                 &header.dim_size,
                 header.element_byte_order_msb,
             )?,
             ElementType::Int => PixelData::from_bytes::<i32>(
-                &raw_data,
+                raw_data,
                 &header.dim_size,
                 header.element_byte_order_msb,
             )?,
             ElementType::ULong => PixelData::from_bytes::<u64>(
-                &raw_data,
+                raw_data,
                 &header.dim_size,
                 header.element_byte_order_msb,
             )?,
             ElementType::Long => PixelData::from_bytes::<i64>(
-                &raw_data,
+                raw_data,
                 &header.dim_size,
                 header.element_byte_order_msb,
             )?,
             ElementType::Float => PixelData::from_bytes::<f32>(
-                &raw_data,
+                raw_data,
                 &header.dim_size,
                 header.element_byte_order_msb,
             )?,
             ElementType::Double => PixelData::from_bytes::<f64>(
-                &raw_data,
+                raw_data,
                 &header.dim_size,
                 header.element_byte_order_msb,
             )?,
@@ -518,6 +526,7 @@ impl MetaImage {
             element_type: header.element_type,
             element_byte_order_msb: header.element_byte_order_msb,
             header_size: header.header_size,
+            optional_tags: header.optional_tags,
             data,
         })
     }
@@ -562,6 +571,26 @@ impl MetaImage {
         let data_file_path = PathBuf::from(name);
         self.write_mhd_with_data_file_path(header_path, data_file_path)
     }
+
+    pub fn write_with_option(
+        &self,
+        path: impl AsRef<Path>,
+        option: WriteOption,
+    ) -> Result<(), MetaImageError> {
+        if option.use_compression {
+            let mut encoder =
+                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(&self.data.to_bytes(self.element_byte_order_msb))?;
+            let compressed_data = encoder.finish()?;
+
+            let mut header_file = File::create("compressed_image.mha")?;
+            write_header(&mut header_file, self, "LOCAL")?;
+            header_file.write_all(&compressed_data)?;
+            Ok(())
+        } else {
+            self.write_mha(path)
+        }
+    }
 }
 
 struct ParsedHeader {
@@ -570,6 +599,8 @@ struct ParsedHeader {
     element_type: ElementType,
     element_byte_order_msb: bool,
     header_size: isize,
+    optional_tags: Vec<(String, String)>,
+    compressed_size: Option<usize>,
     element_data_file: String,
 }
 
@@ -579,6 +610,8 @@ fn parse_header(file_bytes: &[u8]) -> Result<(ParsedHeader, Option<usize>), Meta
     let mut element_type: Option<ElementType> = None;
     let mut header_size: isize = 0;
     let mut element_byte_order_msb = false;
+    let mut optional_tags: Vec<(String, String)> = Vec::new();
+    let mut compressed_size: Option<usize> = None;
     let mut element_data_file: Option<String> = None;
     let mut inline_offset: Option<usize> = None;
 
@@ -633,12 +666,19 @@ fn parse_header(file_bytes: &[u8]) -> Result<(ParsedHeader, Option<usize>), Meta
                     .parse::<isize>()
                     .map_err(|_| MetaImageError::Parse("HeaderSize must be integer".into()))?;
             }
+            "CompressedDataSize" => {
+                compressed_size = Some(value.parse::<usize>().map_err(|_| {
+                    MetaImageError::Parse("CompressedDataSize must be an integer".into())
+                })?);
+            }
             "ElementDataFile" => {
                 element_data_file = Some(value.to_string());
                 inline_offset = Some(line_start);
                 break; // ElementDataFile is specified to be last.
             }
-            _ => {}
+            _ => {
+                optional_tags.push((key.to_string(), value.to_string()));
+            }
         }
     }
 
@@ -661,6 +701,8 @@ fn parse_header(file_bytes: &[u8]) -> Result<(ParsedHeader, Option<usize>), Meta
             element_type,
             element_byte_order_msb,
             header_size,
+            optional_tags,
+            compressed_size,
             element_data_file,
         },
         inline_offset,
@@ -782,50 +824,3 @@ fn format_element_type(element_type: ElementType) -> &'static str {
         ElementType::Double => "MET_DOUBLE",
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use ndarray::array;
-//     use std::env;
-
-//     #[test]
-//     fn round_trip_mha_u16() {
-//         let data = array![[1u16, 2u16], [3u16, 4u16]].into_dyn();
-//         let image = MetaImage::from_array(data);
-
-//         let temp_path = env::temp_dir().join("metaimage_roundtrip.mha");
-//         image.write_mha(&temp_path).unwrap();
-
-//         let loaded = MetaImage::read(&temp_path).unwrap();
-//         let PixelData::U16(arr) = loaded.data else {
-//             panic!("expected u16 data");
-//         };
-//         assert_eq!(arr[[0, 0]], 1);
-//         assert_eq!(arr[[1, 1]], 4);
-
-//         let _ = fs::remove_file(temp_path);
-//     }
-
-//     #[test]
-//     fn round_trip_mhd_external_raw() {
-//         let data = array![[[10u8, 11u8], [12u8, 13u8]]].into_dyn();
-//         let image = MetaImage::from_array(data);
-
-//         let header_path = env::temp_dir().join("metaimage_test.mhd");
-//         let raw_name = PathBuf::from("metaimage_test.raw");
-//         let raw_path = header_path.parent().unwrap().join(&raw_name);
-
-//         image.write_mhd(&header_path, &raw_name).unwrap();
-
-//         let loaded = MetaImage::read(&header_path).unwrap();
-//         let PixelData::U8(arr) = loaded.data else {
-//             panic!("expected u8 data");
-//         };
-//         assert_eq!(arr[[0, 0, 0]], 10);
-//         assert_eq!(arr[[0, 1, 1]], 13);
-
-//         let _ = fs::remove_file(header_path);
-//         let _ = fs::remove_file(raw_path);
-//     }
-// }
