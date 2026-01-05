@@ -20,6 +20,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--compress", action="store_true", help="Whether to compress the .mhd file."
     )
+    parser.add_argument(
+        "--vector", action="store_true", help="Whether to write the image as a vector."
+    )
 
     args = parser.parse_args()
 
@@ -34,7 +37,7 @@ if __name__ == "__main__":
         )
         arr = np.full(image_shape, args.value, dtype=args.dtype)
 
-        image = sitk.GetImageFromArray(arr)
+        image = sitk.GetImageFromArray(arr, isVector=args.vector)
         sitk.WriteImage(image, mhd_file_path, useCompression=args.compress)
 
     sys.exit(0)

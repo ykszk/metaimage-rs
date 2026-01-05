@@ -37,15 +37,11 @@ fn test_itk_write_compatibility() {
             let arr = Array3::<$ty>::zeros((10, 10, 10));
             let mhd_path = temp_dir.join(format!("{}_{}.mhd", $basename, stringify!($ty)));
             let image = MetaImage::from_array(arr.clone().into_dyn());
-            image
-                .write_mhd(&mhd_path)
-                .expect("Failed to write MHD file.");
+            image.write(&mhd_path).expect("Failed to write MHD file.");
             paths.push(mhd_path);
-            let mha_path = temp_dir.join(format!("{}_{}.mha", $basename, stringify!($ty)));
+            let mha_path = temp_dir.join(format!("{}_{}.mha", $basename, stringify!($ty),));
             let image = MetaImage::from_array(arr.into_dyn());
-            image
-                .write_mha(&mha_path)
-                .expect("Failed to write MHA file.");
+            image.write(&mha_path).expect("Failed to write MHA file.");
             paths.push(mha_path);
         }};
     }
