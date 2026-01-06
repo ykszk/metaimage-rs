@@ -3,10 +3,11 @@ use ndarray::{ArrayD, IxDyn};
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::{self, Display};
-use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::vec;
 
 /// Pixel storage type supported by MetaImage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,43 +229,6 @@ impl PixelData {
             Self::F64(arr) => Self::_to_bytes(arr),
         }
     }
-
-    fn from_bytes<T: MetaElement>(
-        raw: Vec<u8>,
-        shape: &[usize],
-        msb: bool,
-    ) -> Result<Self, MetaImageError>
-    where
-        Self: From<ArrayD<T>>,
-    {
-        let bytes_per_elem = std::mem::size_of::<T>();
-        if raw.len() != bytes_per_elem * shape.iter().product::<usize>() {
-            return Err(MetaImageError::Shape(
-                "raw byte length does not match shape".into(),
-            ));
-        }
-
-        #[cfg(target_endian = "little")]
-        let values = if msb {
-            unimplemented!("endianness conversion not implemented yet");
-        } else {
-            // TODO: Use into_raw_parts when 1.93.0 is released
-            let len = raw.len() / bytes_per_elem;
-            // SAFETY: Vec<u8> is properly sized, and T is Pod (MetaElement is only implemented for Pod types)
-            let boxed = raw.into_boxed_slice();
-            let ptr = Box::into_raw(boxed) as *mut T;
-            let values = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
-            let values: Vec<T> = values.into_vec();
-            values
-        };
-
-        #[cfg(target_endian = "big")]
-        unimplemented!("endianness conversion not implemented yet");
-
-        let array = ArrayD::from_shape_vec(IxDyn(shape), values)
-            .map_err(|err| MetaImageError::Shape(format!("{err}")))?;
-        Ok(Self::from(array))
-    }
 }
 
 macro_rules! impl_from_arrayd {
@@ -360,6 +324,11 @@ impl WriteOption {
     }
 }
 
+fn to_u8_slice<T>(slice: &mut [T]) -> &mut [u8] {
+    let byte_len = std::mem::size_of_val(slice);
+    unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr().cast::<u8>(), byte_len) }
+}
+
 impl MetaImage {
     /// Build a MetaImage from an ndarray of a supported element type.
     pub fn from_array<T: MetaElement>(array: ArrayD<T>) -> Self
@@ -415,83 +384,123 @@ impl MetaImage {
         }
     }
 
+    pub fn typed_read<T: Default + Clone>(
+        mut reader: BufReader<File>,
+        len_to_read: usize,
+    ) -> io::Result<Vec<T>> {
+        // https://users.rust-lang.org/t/how-best-to-convert-u8-to-u16/57551/2
+        let len_to_read = len_to_read as u64;
+        let len = if len_to_read.is_multiple_of(std::mem::size_of::<T>() as u64) {
+            usize::try_from(len_to_read / std::mem::size_of::<T>() as u64)
+                .map_err(|_| io::Error::other("File is too large"))?
+        } else {
+            return Err(io::Error::other("Length is odd"));
+        };
+
+        let mut vec: Vec<T> = vec![T::default(); len];
+
+        let slice: &mut [u8] = to_u8_slice(&mut vec);
+
+        reader.read_exact(slice)?;
+        Ok(vec)
+    }
+
     /// Read a MetaImage from a header (.mhd) or combined (.mha) file.
     pub fn read(path: impl AsRef<Path>) -> Result<Self, MetaImageError> {
         let path = path.as_ref();
-        let file_bytes = fs::read(path)?;
-        let (header, inline_offset) = parse_header(&file_bytes)?;
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let (header, inline_offset) = parse_header(&mut reader)?;
+        if header.element_byte_order_msb && cfg!(target_endian = "little") {
+            return Err(MetaImageError::Unsupported(
+                "big endian data not supported yet".into(),
+            ));
+        }
+        if cfg!(target_endian = "big") {
+            return Err(MetaImageError::Unsupported(
+                "big endian environment not supported yet".into(),
+            ));
+        }
 
-        let shape = if header.element_no_of_channels > 1 {
-            let mut s = header.dim_size.clone();
-            s.push(header.element_no_of_channels);
-            s
-        } else {
-            header.dim_size.clone()
-        };
+        fn read_pixel_data<T: MetaElement + Default + Clone>(
+            header: &ParsedHeader,
+            reader: BufReader<File>,
+            path: &Path,
+            inline_offset: Option<usize>,
+        ) -> Result<PixelData, MetaImageError>
+        where
+            PixelData: From<ArrayD<T>>,
+        {
+            let shape = if header.element_no_of_channels > 1 {
+                let mut s = header.dim_size.clone();
+                s.push(header.element_no_of_channels);
+                s
+            } else {
+                header.dim_size.clone()
+            };
 
-        let element_count = shape
-            .iter()
-            .try_fold(1usize, |acc, v| acc.checked_mul(*v).ok_or("overflow"))
-            .map_err(|_| MetaImageError::Shape("dim_size product overflow".into()))?;
-        let expected_bytes = if let Some(compressed_size) = header.compressed_size {
-            compressed_size
-        } else {
-            element_count
-                .checked_mul(header.element_type.byte_len())
-                .ok_or_else(|| MetaImageError::Shape("byte size overflow".into()))?
-        };
+            let element_count = shape
+                .iter()
+                .try_fold(1usize, |acc, v| acc.checked_mul(*v).ok_or("overflow"))
+                .map_err(|_| MetaImageError::Shape("dim_size product overflow".into()))?;
+            let raw_data = if let Some(compressed_size) = header.compressed_size {
+                let mut buf = vec![0u8; compressed_size];
+                let mut reader = reader;
+                if header.element_data_file.eq_ignore_ascii_case("LOCAL") {
+                    inline_offset.ok_or_else(|| {
+                        MetaImageError::Parse("inline data offset missing".into())
+                    })?;
+                    reader.read_exact(&mut buf)?;
+                } else {
+                    let data_path = resolve_data_path(path, &header.element_data_file);
+                    let mut data_file = File::open(data_path)?;
+                    if header.header_size > 0 {
+                        data_file.seek(SeekFrom::Start(header.header_size as u64))?;
+                    }
+                    let mut data_reader = BufReader::new(data_file);
+                    data_reader.read_exact(&mut buf)?;
+                }
+                assert_eq!(buf.len(), compressed_size);
+                let mut decoder = flate2::read::ZlibDecoder::new(&buf[..]);
+                let mut decompressed_data: Vec<T> = vec![T::default(); element_count];
+                decoder.read_exact(to_u8_slice(&mut decompressed_data))?;
+                decompressed_data
+            } else {
+                let expected_bytes = element_count
+                    .checked_mul(header.element_type.byte_len())
+                    .ok_or_else(|| MetaImageError::Shape("byte size overflow".into()))?;
 
-        let mut raw_data = if header.element_data_file.eq_ignore_ascii_case("LOCAL") {
-            let start = inline_offset
-                .ok_or_else(|| MetaImageError::Parse("inline data offset missing".into()))?;
-            if file_bytes.len() < start + expected_bytes {
-                return Err(MetaImageError::Parse(
-                    "inline data shorter than expected".into(),
-                ));
-            }
-            file_bytes[start..start + expected_bytes].to_vec()
-        } else {
-            let data_path = resolve_data_path(path, &header.element_data_file);
-            read_raw_data(&data_path, header.header_size, expected_bytes)?
-        };
-        if header.compressed_size.is_some() {
-            let mut decoder = flate2::read::ZlibDecoder::new(&raw_data[..]);
-            let mut decompressed_data = Vec::new();
-            decoder.read_to_end(&mut decompressed_data)?;
-            raw_data = decompressed_data;
+                if header.element_data_file.eq_ignore_ascii_case("LOCAL") {
+                    inline_offset.ok_or_else(|| {
+                        MetaImageError::Parse("inline data offset missing".into())
+                    })?;
+                    MetaImage::typed_read::<T>(reader, expected_bytes)?
+                } else {
+                    let data_path = resolve_data_path(path, &header.element_data_file);
+                    let data_file = File::open(data_path)?;
+                    let mut data_reader = BufReader::new(data_file);
+                    if header.header_size > 0 {
+                        data_reader.seek(SeekFrom::Start(header.header_size as u64))?;
+                    }
+                    MetaImage::typed_read::<T>(data_reader, expected_bytes)?
+                }
+            };
+            let array = ArrayD::from_shape_vec(IxDyn(&shape), raw_data)
+                .map_err(|err| MetaImageError::Shape(format!("{err}")))?;
+            Ok(PixelData::from(array))
         }
 
         let data = match header.element_type {
-            ElementType::UChar => {
-                PixelData::from_bytes::<u8>(raw_data, &shape, header.element_byte_order_msb)?
-            }
-            ElementType::Char => {
-                PixelData::from_bytes::<i8>(raw_data, &shape, header.element_byte_order_msb)?
-            }
-            ElementType::UShort => {
-                PixelData::from_bytes::<u16>(raw_data, &shape, header.element_byte_order_msb)?
-            }
-            ElementType::Short => {
-                PixelData::from_bytes::<i16>(raw_data, &shape, header.element_byte_order_msb)?
-            }
-            ElementType::UInt => {
-                PixelData::from_bytes::<u32>(raw_data, &shape, header.element_byte_order_msb)?
-            }
-            ElementType::Int => {
-                PixelData::from_bytes::<i32>(raw_data, &shape, header.element_byte_order_msb)?
-            }
-            ElementType::ULong => {
-                PixelData::from_bytes::<u64>(raw_data, &shape, header.element_byte_order_msb)?
-            }
-            ElementType::Long => {
-                PixelData::from_bytes::<i64>(raw_data, &shape, header.element_byte_order_msb)?
-            }
-            ElementType::Float => {
-                PixelData::from_bytes::<f32>(raw_data, &shape, header.element_byte_order_msb)?
-            }
-            ElementType::Double => {
-                PixelData::from_bytes::<f64>(raw_data, &shape, header.element_byte_order_msb)?
-            }
+            ElementType::UChar => read_pixel_data::<u8>(&header, reader, path, inline_offset)?,
+            ElementType::Char => read_pixel_data::<i8>(&header, reader, path, inline_offset)?,
+            ElementType::UShort => read_pixel_data::<u16>(&header, reader, path, inline_offset)?,
+            ElementType::Short => read_pixel_data::<i16>(&header, reader, path, inline_offset)?,
+            ElementType::UInt => read_pixel_data::<u32>(&header, reader, path, inline_offset)?,
+            ElementType::Int => read_pixel_data::<i32>(&header, reader, path, inline_offset)?,
+            ElementType::ULong => read_pixel_data::<u64>(&header, reader, path, inline_offset)?,
+            ElementType::Long => read_pixel_data::<i64>(&header, reader, path, inline_offset)?,
+            ElementType::Float => read_pixel_data::<f32>(&header, reader, path, inline_offset)?,
+            ElementType::Double => read_pixel_data::<f64>(&header, reader, path, inline_offset)?,
         };
 
         Ok(Self {
@@ -604,7 +613,9 @@ struct ParsedHeader {
     element_data_file: String,
 }
 
-fn parse_header(file_bytes: &[u8]) -> Result<(ParsedHeader, Option<usize>), MetaImageError> {
+fn parse_header<R: BufRead>(
+    reader: &mut R,
+) -> Result<(ParsedHeader, Option<usize>), MetaImageError> {
     let mut dim_size: Option<Vec<usize>> = None;
     let mut spacing: Option<Vec<f64>> = None;
     let mut element_type: Option<ElementType> = None;
@@ -616,15 +627,18 @@ fn parse_header(file_bytes: &[u8]) -> Result<(ParsedHeader, Option<usize>), Meta
     let mut element_data_file: Option<String> = None;
     let mut inline_offset: Option<usize> = None;
 
-    let mut line_start = 0usize;
-    for (idx, &byte) in file_bytes.iter().enumerate() {
-        if byte != b'\n' {
-            continue;
-        }
+    let mut bytes_read = 0usize;
+    let mut line_buffer = String::new();
 
-        let line_bytes = &file_bytes[line_start..idx];
-        line_start = idx + 1;
-        let line = String::from_utf8_lossy(line_bytes).trim().to_string();
+    loop {
+        line_buffer.clear();
+        let bytes = reader.read_line(&mut line_buffer)?;
+        if bytes == 0 {
+            break; // EOF
+        }
+        bytes_read += bytes;
+
+        let line = line_buffer.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -684,7 +698,7 @@ fn parse_header(file_bytes: &[u8]) -> Result<(ParsedHeader, Option<usize>), Meta
             }
             "ElementDataFile" => {
                 element_data_file = Some(value.to_string());
-                inline_offset = Some(line_start);
+                inline_offset = Some(bytes_read);
                 break; // ElementDataFile is specified to be last.
             }
             _ => {
@@ -751,33 +765,6 @@ fn resolve_data_path(header_path: &Path, data_file: &str) -> PathBuf {
             .unwrap_or_else(|| Path::new("."))
             .join(data_path)
     }
-}
-
-fn read_raw_data(
-    path: &Path,
-    header_size: isize,
-    expected_bytes: usize,
-) -> Result<Vec<u8>, MetaImageError> {
-    let mut file = File::open(path)?;
-    let meta = file.metadata()?;
-    let file_len = meta.len();
-
-    let skip = if header_size >= 0 {
-        header_size as u64
-    } else {
-        let total_needed = expected_bytes as u64;
-        if file_len < total_needed {
-            return Err(MetaImageError::Parse(
-                "data file smaller than expected".into(),
-            ));
-        }
-        file_len - total_needed
-    };
-
-    file.seek(SeekFrom::Start(skip))?;
-    let mut buf = vec![0u8; expected_bytes];
-    file.read_exact(&mut buf)?;
-    Ok(buf)
 }
 
 fn write_header(
@@ -879,7 +866,9 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         write_header(&mut buf, &metadata, "data.raw").unwrap();
 
-        let parsed_header = parse_header(&buf).unwrap().0;
+        let cursor = io::Cursor::new(buf.clone());
+        let mut reader = BufReader::new(cursor);
+        let parsed_header = parse_header(&mut reader).unwrap().0;
         let tag_entry = ("TestTag".to_string(), "TestValue".to_string());
         assert!(parsed_header.optional_tags.contains(&tag_entry));
         let list_entry = ("ListTag".to_string(), "1 2 3 4".to_string());
