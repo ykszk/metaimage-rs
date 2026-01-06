@@ -33,8 +33,8 @@ fn test_itk_write_compatibility() {
 
     let mut paths = Vec::new();
     macro_rules! save_mhd_mha {
-        ($ty:ty, $basename:expr) => {{
-            let arr = Array3::<$ty>::zeros((10, 10, 10));
+        ($ty:ty, $basename:expr, $value:expr) => {{
+            let arr = Array3::<$ty>::from_elem((10, 10, 10), $value);
             let mhd_path = temp_dir.join(format!("{}_{}.mhd", $basename, stringify!($ty)));
             let image = MetaImage::from_array(arr.clone().into_dyn());
             image.write(&mhd_path).expect("Failed to write MHD file.");
@@ -46,22 +46,46 @@ fn test_itk_write_compatibility() {
         }};
     }
 
-    save_mhd_mha!(u8, "test_image");
-    save_mhd_mha!(u16, "test_image");
-    save_mhd_mha!(f32, "test_image");
-    save_mhd_mha!(f64, "test_image");
+    save_mhd_mha!(u8, "test_image", 42u8);
+    save_mhd_mha!(u16, "test_image", 42u16);
+    save_mhd_mha!(u32, "test_image", 42u32);
+    save_mhd_mha!(f32, "test_image", 42f32);
+    save_mhd_mha!(f64, "test_image", 42f64);
 
     let output = std::process::Command::new(python_bin())
         .arg("tests/read_mhd.py")
         .args(&paths)
         .arg("--shape")
         .args(["10", "10", "10"])
+        .arg("--value")
+        .arg("42")
         .output()
         .expect("Failed to execute Python script to read the image.");
     if !output.status.success() {
         panic!(
             "Failed to read the image using SimpleITK. stderr: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    paths.clear();
+    save_mhd_mha!(i8, "test_image", -42i8);
+    save_mhd_mha!(i16, "test_image", -42i16);
+    save_mhd_mha!(i32, "test_image", -42i32);
+
+    let output = std::process::Command::new(python_bin())
+        .arg("tests/read_mhd.py")
+        .args(&paths)
+        .arg("--shape")
+        .args(["10", "10", "10"])
+        .arg("--value=-42")
+        .output()
+        .expect("Failed to execute Python script to read the image.");
+    if !output.status.success() {
+        panic!(
+            "Failed to read the image using SimpleITK. stderr: {}\n stdout: {}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
         );
     }
 }

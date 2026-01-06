@@ -1,5 +1,6 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 use ndarray::{ArrayD, IxDyn};
+use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs::{self, File};
@@ -106,28 +107,12 @@ impl From<io::Error> for MetaImageError {
 /// Trait implemented for element types that can be encoded in MetaImage files.
 pub trait MetaElement: Clone + Send + Sync + 'static {
     const ELEMENT_TYPE: ElementType;
-    fn from_le(bytes: &[u8]) -> Self;
-    fn from_be(bytes: &[u8]) -> Self;
-    fn to_le_bytes(value: &Self) -> Vec<u8>;
-    fn to_be_bytes(value: &Self) -> Vec<u8>;
 }
 
 macro_rules! impl_meta_element {
     ($ty:ty, $elem:expr) => {
         impl MetaElement for $ty {
             const ELEMENT_TYPE: ElementType = $elem;
-            fn from_le(bytes: &[u8]) -> Self {
-                <$ty>::from_le_bytes(bytes.try_into().expect("slice length checked"))
-            }
-            fn from_be(bytes: &[u8]) -> Self {
-                <$ty>::from_be_bytes(bytes.try_into().expect("slice length checked"))
-            }
-            fn to_le_bytes(value: &Self) -> Vec<u8> {
-                <$ty>::to_le_bytes(*value).to_vec()
-            }
-            fn to_be_bytes(value: &Self) -> Vec<u8> {
-                <$ty>::to_be_bytes(*value).to_vec()
-            }
         }
     };
 }
@@ -135,34 +120,10 @@ macro_rules! impl_meta_element {
 // One-byte integers do not depend on endianness.
 impl MetaElement for u8 {
     const ELEMENT_TYPE: ElementType = ElementType::UChar;
-    fn from_le(bytes: &[u8]) -> Self {
-        bytes[0]
-    }
-    fn from_be(bytes: &[u8]) -> Self {
-        bytes[0]
-    }
-    fn to_le_bytes(value: &Self) -> Vec<u8> {
-        vec![*value]
-    }
-    fn to_be_bytes(value: &Self) -> Vec<u8> {
-        vec![*value]
-    }
 }
 
 impl MetaElement for i8 {
     const ELEMENT_TYPE: ElementType = ElementType::Char;
-    fn from_le(bytes: &[u8]) -> Self {
-        bytes[0] as i8
-    }
-    fn from_be(bytes: &[u8]) -> Self {
-        bytes[0] as i8
-    }
-    fn to_le_bytes(value: &Self) -> Vec<u8> {
-        vec![*value as u8]
-    }
-    fn to_be_bytes(value: &Self) -> Vec<u8> {
-        vec![*value as u8]
-    }
 }
 
 impl_meta_element!(u16, ElementType::UShort);
@@ -220,114 +181,58 @@ impl PixelData {
         }
     }
 
-    fn to_bytes(&self, msb: bool) -> Vec<u8> {
-        match self {
-            Self::U8(arr) => arr.iter().copied().collect(),
-            Self::I8(arr) => arr.iter().map(|v| *v as u8).collect(),
-            Self::U16(arr) => arr
-                .iter()
-                .flat_map(|v| {
-                    if msb {
-                        v.to_be_bytes()
-                    } else {
-                        v.to_le_bytes()
-                    }
-                })
-                .collect(),
-            Self::I16(arr) => arr
-                .iter()
-                .flat_map(|v| {
-                    if msb {
-                        v.to_be_bytes()
-                    } else {
-                        v.to_le_bytes()
-                    }
-                })
-                .collect(),
-            Self::U32(arr) => arr
-                .iter()
-                .flat_map(|v| {
-                    if msb {
-                        v.to_be_bytes()
-                    } else {
-                        v.to_le_bytes()
-                    }
-                })
-                .collect(),
-            Self::I32(arr) => arr
-                .iter()
-                .flat_map(|v| {
-                    if msb {
-                        v.to_be_bytes()
-                    } else {
-                        v.to_le_bytes()
-                    }
-                })
-                .collect(),
-            Self::U64(arr) => arr
-                .iter()
-                .flat_map(|v| {
-                    if msb {
-                        v.to_be_bytes()
-                    } else {
-                        v.to_le_bytes()
-                    }
-                })
-                .collect(),
-            Self::I64(arr) => arr
-                .iter()
-                .flat_map(|v| {
-                    if msb {
-                        v.to_be_bytes()
-                    } else {
-                        v.to_le_bytes()
-                    }
-                })
-                .collect(),
-            Self::F32(arr) => arr
-                .iter()
-                .flat_map(|v| {
-                    if msb {
-                        v.to_be_bytes()
-                    } else {
-                        v.to_le_bytes()
-                    }
-                })
-                .collect(),
-            Self::F64(arr) => arr
-                .iter()
-                .flat_map(|v| {
-                    if msb {
-                        v.to_be_bytes()
-                    } else {
-                        v.to_le_bytes()
-                    }
-                })
-                .collect(),
+    fn _to_bytes<T: MetaElement>(arr: &'_ ArrayD<T>) -> Cow<'_, [u8]> {
+        if let Some(slice) = arr.as_slice() {
+            let byte_len = T::ELEMENT_TYPE.byte_len() * slice.len();
+            let bytes =
+                unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, byte_len) };
+            Cow::Borrowed(bytes)
+        } else {
+            // convert to contiguous vec
+            let raw: Vec<_> = arr.iter().collect();
+            let len = raw.len() / T::ELEMENT_TYPE.byte_len();
+            let boxed = raw.into_boxed_slice();
+            let ptr = Box::into_raw(boxed) as *mut u8;
+            let values = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
+            let values: Vec<u8> = values.into_vec();
+            Cow::Owned(values)
         }
     }
 
-    pub fn read<P: AsRef<Path>>(path: P) -> io::Result<Vec<u16>> {
-        let mut file = File::open(path)?;
+    fn to_bytes(&'_ self, msb: bool) -> Cow<'_, [u8]> {
+        if cfg!(target_endian = "big") {
+            unimplemented!("big endian environment not supported yet");
+        }
+        if msb {
+            unimplemented!("writing big endian data not supported yet");
+        }
 
-        let len = file.metadata()?.len();
-        let len = if len % 2 == 0 {
-            usize::try_from(len / 2).map_err(|_| io::Error::other("File is too large"))?
-        } else {
-            return Err(io::Error::other("Length is odd"));
-        };
-
-        let mut vec = vec![0u16; len];
-
-        let slice: &mut [u8] = Self::to_u8_slice(&mut vec);
-
-        file.read_exact(slice)?;
-        Ok(vec)
-    }
-
-    fn to_u8_slice(slice: &mut [u16]) -> &mut [u8] {
-        let byte_len = 2 * slice.len();
-        unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr().cast::<u8>(), byte_len) }
+        match self {
+            Self::U8(arr) => {
+                if let Some(slice) = arr.as_slice() {
+                    Cow::Borrowed(slice)
+                } else {
+                    Cow::Owned(arr.iter().cloned().collect())
+                }
+            }
+            Self::I8(arr) => {
+                if let Some(slice) = arr.as_slice() {
+                    Cow::Borrowed(unsafe {
+                        std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len())
+                    })
+                } else {
+                    Cow::Owned(arr.iter().map(|&v| v as u8).collect())
+                }
+            }
+            Self::U16(arr) => Self::_to_bytes(arr),
+            Self::I16(arr) => Self::_to_bytes(arr),
+            Self::U32(arr) => Self::_to_bytes(arr),
+            Self::I32(arr) => Self::_to_bytes(arr),
+            Self::U64(arr) => Self::_to_bytes(arr),
+            Self::I64(arr) => Self::_to_bytes(arr),
+            Self::F32(arr) => Self::_to_bytes(arr),
+            Self::F64(arr) => Self::_to_bytes(arr),
+        }
     }
 
     fn from_bytes<T: MetaElement>(

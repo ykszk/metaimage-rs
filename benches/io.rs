@@ -14,8 +14,8 @@ fn write_image(z: usize) {
     image.write(&mhd_path).expect("Failed to write MHD file.");
 }
 
+/// Write image first!
 fn read_image(z: usize) {
-    write_image(z);
     let mhd_path = tmp_mhd_path(z);
     let _image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
 }
