@@ -117,15 +117,8 @@ macro_rules! impl_meta_element {
     };
 }
 
-// One-byte integers do not depend on endianness.
-impl MetaElement for u8 {
-    const ELEMENT_TYPE: ElementType = ElementType::UChar;
-}
-
-impl MetaElement for i8 {
-    const ELEMENT_TYPE: ElementType = ElementType::Char;
-}
-
+impl_meta_element!(u8, ElementType::UChar);
+impl_meta_element!(i8, ElementType::Char);
 impl_meta_element!(u16, ElementType::UShort);
 impl_meta_element!(i16, ElementType::Short);
 impl_meta_element!(u32, ElementType::UInt);
@@ -189,8 +182,12 @@ impl PixelData {
             Cow::Borrowed(bytes)
         } else {
             // convert to contiguous vec
-            let raw: Vec<_> = arr.iter().collect();
-            let len = raw.len() / T::ELEMENT_TYPE.byte_len();
+            let raw = arr
+                .as_standard_layout()
+                .to_owned()
+                .into_raw_vec_and_offset()
+                .0;
+            let len = T::ELEMENT_TYPE.byte_len() * raw.len();
             let boxed = raw.into_boxed_slice();
             let ptr = Box::into_raw(boxed) as *mut u8;
             let values = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
@@ -212,18 +209,15 @@ impl PixelData {
                 if let Some(slice) = arr.as_slice() {
                     Cow::Borrowed(slice)
                 } else {
-                    Cow::Owned(arr.iter().cloned().collect())
+                    Cow::Owned(
+                        arr.as_standard_layout()
+                            .to_owned()
+                            .into_raw_vec_and_offset()
+                            .0,
+                    )
                 }
             }
-            Self::I8(arr) => {
-                if let Some(slice) = arr.as_slice() {
-                    Cow::Borrowed(unsafe {
-                        std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len())
-                    })
-                } else {
-                    Cow::Owned(arr.iter().map(|&v| v as u8).collect())
-                }
-            }
+            Self::I8(arr) => Self::_to_bytes(arr),
             Self::U16(arr) => Self::_to_bytes(arr),
             Self::I16(arr) => Self::_to_bytes(arr),
             Self::U32(arr) => Self::_to_bytes(arr),

@@ -91,6 +91,61 @@ fn test_itk_write_compatibility() {
 }
 
 #[test]
+fn test_uncontiguous_write() {
+    check_python();
+    let temp_dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+
+    let value_vec: Vec<_> = (0u16..100).collect();
+    let arr = ndarray::Array2::<u16>::from_shape_vec((10, 10), value_vec).unwrap();
+    let arr = arr.permuted_axes([1, 0]); // make it uncontiguous
+    let image = MetaImage::from_array(arr.clone().into_dyn());
+    assert!(!match image.data {
+        PixelData::U16(ref a) => a.is_standard_layout(),
+        _ => panic!("expected u16 data"),
+    });
+    let mhd_path = temp_dir.join("uncontiguous_image.mha");
+    image.write(&mhd_path).expect("Failed to write MHD file.");
+
+    // read back
+    let image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
+    let read_vec = match image.data {
+        PixelData::U16(a) => a.into_raw_vec_and_offset().0,
+        _ => panic!("expected u16 data"),
+    };
+    let permuted_vec = arr
+        .as_standard_layout()
+        .to_owned()
+        .into_raw_vec_and_offset()
+        .0;
+    assert_eq!(read_vec, permuted_vec);
+
+    // test for i8
+    let value_vec: Vec<i8> = (-50..50).collect();
+    let arr = ndarray::Array2::<i8>::from_shape_vec((10, 10), value_vec).unwrap();
+    let arr = arr.permuted_axes([1, 0]); // make it uncontiguous
+    let image = MetaImage::from_array(arr.clone().into_dyn());
+    assert!(!match image.data {
+        PixelData::I8(ref a) => a.is_standard_layout(),
+        _ => panic!("expected i8 data"),
+    });
+    let mhd_path = temp_dir.join("uncontiguous_image.mha");
+    image.write(&mhd_path).expect("Failed to write MHD file.");
+
+    // read back
+    let image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
+    let read_vec = match image.data {
+        PixelData::I8(a) => a.into_raw_vec_and_offset().0,
+        _ => panic!("expected i8 data"),
+    };
+    let permuted_vec = arr
+        .as_standard_layout()
+        .to_owned()
+        .into_raw_vec_and_offset()
+        .0;
+    assert_eq!(read_vec, permuted_vec);
+}
+
+#[test]
 #[ignore = "Testing the compatiblity with ITK is skipped. Run tests with `--include-ignored` to enable it."]
 fn test_itk_read_compatibility() {
     check_python();
