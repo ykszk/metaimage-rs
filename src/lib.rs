@@ -1,4 +1,5 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
+use bytemuck::NoUninit;
 use ndarray::{ArrayD, IxDyn};
 use std::borrow::Cow;
 use std::error::Error;
@@ -175,11 +176,9 @@ impl PixelData {
         }
     }
 
-    fn _to_bytes<T: MetaElement>(arr: &'_ ArrayD<T>) -> Cow<'_, [u8]> {
+    fn _to_bytes<T: MetaElement + NoUninit>(arr: &'_ ArrayD<T>) -> Cow<'_, [u8]> {
         if let Some(slice) = arr.as_slice() {
-            let byte_len = T::ELEMENT_TYPE.byte_len() * slice.len();
-            let bytes =
-                unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, byte_len) };
+            let bytes = bytemuck::must_cast_slice(slice);
             Cow::Borrowed(bytes)
         } else {
             // convert to contiguous vec
@@ -188,7 +187,7 @@ impl PixelData {
                 .to_owned()
                 .into_raw_vec_and_offset()
                 .0;
-            let len = T::ELEMENT_TYPE.byte_len() * raw.len();
+            let len = std::mem::size_of::<T>() * raw.len();
             let boxed = raw.into_boxed_slice();
             let ptr = Box::into_raw(boxed) as *mut u8;
             let values = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
