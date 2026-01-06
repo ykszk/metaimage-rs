@@ -8,4 +8,9 @@ flate2 = "1.1.5"
 ndarray = "0.17.1"
 
 [dev-dependencies]
+criterion = "0.8.1"
 which = "8.0.0"
+
+[[bench]]
+name = "io"
+harness = false
