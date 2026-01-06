@@ -965,4 +965,25 @@ mod tests {
             _ => panic!("unexpected pixel data type"),
         }
     }
+
+    #[test]
+    fn test_optional_tags() {
+        let image = MetaImage::from_array(ArrayD::<u8>::zeros(IxDyn(&[2, 2])));
+        let mut metadata = image.metadata;
+        metadata
+            .optional_tags
+            .push(("TestTag".to_string(), "TestValue".to_string()));
+        metadata
+            .optional_tags
+            .push(("ListTag".to_string(), "1 2 3 4".to_string()));
+
+        let mut buf: Vec<u8> = Vec::new();
+        write_header(&mut buf, &metadata, "data.raw").unwrap();
+
+        let parsed_header = parse_header(&buf).unwrap().0;
+        let tag_entry = ("TestTag".to_string(), "TestValue".to_string());
+        assert!(parsed_header.optional_tags.contains(&tag_entry));
+        let list_entry = ("ListTag".to_string(), "1 2 3 4".to_string());
+        assert!(parsed_header.optional_tags.contains(&list_entry));
+    }
 }
