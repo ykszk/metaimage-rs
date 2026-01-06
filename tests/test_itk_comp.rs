@@ -130,3 +130,77 @@ fn test_itk_read_compatibility() {
         assert_eq!(v, 42);
     });
 }
+
+#[test]
+#[ignore = "Testing the compatiblity with ITK is skipped. Run tests with `--include-ignored` to enable it."]
+fn test_itk_vector_image_compatibility() {
+    let temp_dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+
+    // test read
+    let pixel_value = 42u8;
+    let mhd_path = temp_dir.join("itk_test_vector_image.mhd");
+    let output = std::process::Command::new(python_bin())
+        .arg("tests/write_mhd.py")
+        .arg("--shape")
+        .args(["10", "10", "10", "3"])
+        .arg("--value")
+        .arg(pixel_value.to_string())
+        .arg("--dtype")
+        .arg("uint8")
+        .arg("--vector")
+        .arg("--")
+        .arg(&mhd_path)
+        .output()
+        .expect("Failed to execute Python script to write the image.");
+    if !output.status.success() {
+        panic!(
+            "Failed to write the image using SimpleITK. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
+    let shape = Vec::from(image.data.shape());
+    assert_eq!(shape, vec![10, 10, 10, 3]);
+    let PixelData::U8(arr) = image.data else {
+        panic!("expected u8 data");
+    };
+    arr.iter().for_each(|&v| {
+        assert_eq!(v, pixel_value);
+    });
+
+    // test write
+    let pixel_value = 128u8;
+    let arr = ndarray::Array4::<u8>::from_elem((10, 10, 10, 3), pixel_value);
+    let image = MetaImage::with_channels(arr.into_dyn());
+    let mhd_path = temp_dir.join("itk_test_vector_image_write.mhd");
+    image.write(&mhd_path).expect("Failed to write MHD file.");
+
+    // read back
+    let image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
+    let shape = Vec::from(image.data.shape());
+    assert_eq!(shape, vec![10, 10, 10, 3]);
+    let PixelData::U8(arr) = image.data else {
+        panic!("expected u8 data");
+    };
+    arr.iter().for_each(|&v| {
+        assert_eq!(v, pixel_value);
+    });
+
+    // verify with SimpleITK
+    let output = std::process::Command::new(python_bin())
+        .arg("tests/read_mhd.py")
+        .args([&mhd_path])
+        .arg("--shape")
+        .args(["10", "10", "10", "3"])
+        .arg("--value")
+        .arg(pixel_value.to_string())
+        .output()
+        .expect("Failed to execute Python script to read the image.");
+    if !output.status.success() {
+        panic!(
+            "Failed to read the image using SimpleITK. stderr: {}\n stdout: {}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}

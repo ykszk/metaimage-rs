@@ -38,9 +38,10 @@ if __name__ == "__main__":
         print("Image Direction:", image.GetDirection())
         print("Number of Components per Pixel:", image.GetNumberOfComponentsPerPixel())
 
+        arr = sitk.GetArrayFromImage(image)
         if args.shape:
             expected_shape = tuple(args.shape)
-            actual_shape = image.GetSize()
+            actual_shape = arr.shape
             if actual_shape != expected_shape:
                 print(
                     f"Error: Expected shape {expected_shape}, but got {actual_shape}."
@@ -49,9 +50,12 @@ if __name__ == "__main__":
             else:
                 print(f"Shape check passed: {actual_shape}")
 
-        arr = sitk.GetArrayFromImage(image)
-        assert np.all(
+        if not np.all(
             arr == args.value
-        ), f"Error: Not all values in the image are {args.value}."
+        ):
+            for pix in np.nditer(arr):
+                if pix != args.value:
+                    print(f"Found value {pix} which is not equal to expected {args.value}")
+                    sys.exit(1)
 
     sys.exit(0)

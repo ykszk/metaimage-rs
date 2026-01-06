@@ -1,3 +1,4 @@
+#![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 use ndarray::{ArrayD, IxDyn};
 use std::error::Error;
 use std::fmt::{self, Display};
@@ -46,6 +47,24 @@ impl ElementType {
             Self::UInt | Self::Int | Self::Float => 4,
             Self::ULong | Self::Long | Self::Double => 8,
         }
+    }
+}
+
+impl std::fmt::Display for ElementType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::UChar => "MET_UCHAR",
+            Self::Char => "MET_CHAR",
+            Self::UShort => "MET_USHORT",
+            Self::Short => "MET_SHORT",
+            Self::UInt => "MET_UINT",
+            Self::Int => "MET_INT",
+            Self::Float => "MET_FLOAT",
+            Self::Double => "MET_DOUBLE",
+            Self::ULong => "MET_ULONG",
+            Self::Long => "MET_LONG",
+        };
+        write!(f, "{s}")
     }
 }
 
@@ -377,6 +396,7 @@ pub struct MetaData {
     pub element_spacing: Vec<f64>,
     pub element_type: ElementType,
     pub element_byte_order_msb: bool,
+    pub element_no_of_channels: usize,
     /// Number of Bytes to skip at the head of each data file
     pub header_size: isize,
     pub optional_tags: Vec<(String, String)>,
@@ -401,14 +421,14 @@ pub struct MetaImage {
     pub data: PixelData,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct WriteOption {
     pub data_file: Option<String>,
     pub compress: bool,
 }
 
 impl WriteOption {
-    /// Automatically determine data file option based on path and pixel data.
+    /// Automatically determine write option based on path and pixel data.
     /// - If the pixel data is floating-point type, compression is disabled.
     /// - If the path has `.mhd` extension, data_file is set to the corresponding raw/zraw file name. Otherwise (`.mha`), data_file is None (inline).
     pub fn new_auto(path: &Path, data: &PixelData) -> Self {
@@ -450,6 +470,7 @@ impl MetaImage {
         let dim_size = array.shape().to_vec();
         let dims = dim_size.len();
         let element_spacing = vec![1.0; dims];
+        let element_no_of_channels = 1;
         Self {
             metadata: MetaData {
                 dims,
@@ -457,6 +478,37 @@ impl MetaImage {
                 element_spacing,
                 element_type: T::ELEMENT_TYPE,
                 element_byte_order_msb: cfg!(target_endian = "big"),
+                element_no_of_channels,
+                header_size: 0,
+                optional_tags: Vec::new(),
+            },
+            data: PixelData::from(array),
+        }
+    }
+
+    /// [`MetaImage::from_array`] variant for vector/rgb images, where the last dimension is treated as channels.
+    pub fn with_channels<T: MetaElement>(array: ArrayD<T>) -> Self
+    where
+        PixelData: From<ArrayD<T>>,
+    {
+        let dim_size = array.shape().to_vec();
+        let dims = dim_size.len();
+        let element_no_of_channels = if dims >= 1 { dim_size[dims - 1] } else { 1 };
+        let dim_size = if dims >= 1 {
+            dim_size[..dims - 1].to_vec()
+        } else {
+            vec![]
+        };
+        let dims = dim_size.len();
+        let element_spacing = vec![1.0; dims];
+        Self {
+            metadata: MetaData {
+                dims,
+                dim_size,
+                element_spacing,
+                element_type: T::ELEMENT_TYPE,
+                element_byte_order_msb: cfg!(target_endian = "big"),
+                element_no_of_channels,
                 header_size: 0,
                 optional_tags: Vec::new(),
             },
@@ -470,8 +522,15 @@ impl MetaImage {
         let file_bytes = fs::read(path)?;
         let (header, inline_offset) = parse_header(&file_bytes)?;
 
-        let element_count = header
-            .dim_size
+        let shape = if header.element_no_of_channels > 1 {
+            let mut s = header.dim_size.clone();
+            s.push(header.element_no_of_channels);
+            s
+        } else {
+            header.dim_size.clone()
+        };
+
+        let element_count = shape
             .iter()
             .try_fold(1usize, |acc, v| acc.checked_mul(*v).ok_or("overflow"))
             .map_err(|_| MetaImageError::Shape("dim_size product overflow".into()))?;
@@ -504,56 +563,36 @@ impl MetaImage {
         }
 
         let data = match header.element_type {
-            ElementType::UChar => PixelData::from_bytes::<u8>(
-                raw_data,
-                &header.dim_size,
-                header.element_byte_order_msb,
-            )?,
-            ElementType::Char => PixelData::from_bytes::<i8>(
-                raw_data,
-                &header.dim_size,
-                header.element_byte_order_msb,
-            )?,
-            ElementType::UShort => PixelData::from_bytes::<u16>(
-                raw_data,
-                &header.dim_size,
-                header.element_byte_order_msb,
-            )?,
-            ElementType::Short => PixelData::from_bytes::<i16>(
-                raw_data,
-                &header.dim_size,
-                header.element_byte_order_msb,
-            )?,
-            ElementType::UInt => PixelData::from_bytes::<u32>(
-                raw_data,
-                &header.dim_size,
-                header.element_byte_order_msb,
-            )?,
-            ElementType::Int => PixelData::from_bytes::<i32>(
-                raw_data,
-                &header.dim_size,
-                header.element_byte_order_msb,
-            )?,
-            ElementType::ULong => PixelData::from_bytes::<u64>(
-                raw_data,
-                &header.dim_size,
-                header.element_byte_order_msb,
-            )?,
-            ElementType::Long => PixelData::from_bytes::<i64>(
-                raw_data,
-                &header.dim_size,
-                header.element_byte_order_msb,
-            )?,
-            ElementType::Float => PixelData::from_bytes::<f32>(
-                raw_data,
-                &header.dim_size,
-                header.element_byte_order_msb,
-            )?,
-            ElementType::Double => PixelData::from_bytes::<f64>(
-                raw_data,
-                &header.dim_size,
-                header.element_byte_order_msb,
-            )?,
+            ElementType::UChar => {
+                PixelData::from_bytes::<u8>(raw_data, &shape, header.element_byte_order_msb)?
+            }
+            ElementType::Char => {
+                PixelData::from_bytes::<i8>(raw_data, &shape, header.element_byte_order_msb)?
+            }
+            ElementType::UShort => {
+                PixelData::from_bytes::<u16>(raw_data, &shape, header.element_byte_order_msb)?
+            }
+            ElementType::Short => {
+                PixelData::from_bytes::<i16>(raw_data, &shape, header.element_byte_order_msb)?
+            }
+            ElementType::UInt => {
+                PixelData::from_bytes::<u32>(raw_data, &shape, header.element_byte_order_msb)?
+            }
+            ElementType::Int => {
+                PixelData::from_bytes::<i32>(raw_data, &shape, header.element_byte_order_msb)?
+            }
+            ElementType::ULong => {
+                PixelData::from_bytes::<u64>(raw_data, &shape, header.element_byte_order_msb)?
+            }
+            ElementType::Long => {
+                PixelData::from_bytes::<i64>(raw_data, &shape, header.element_byte_order_msb)?
+            }
+            ElementType::Float => {
+                PixelData::from_bytes::<f32>(raw_data, &shape, header.element_byte_order_msb)?
+            }
+            ElementType::Double => {
+                PixelData::from_bytes::<f64>(raw_data, &shape, header.element_byte_order_msb)?
+            }
         };
 
         Ok(Self {
@@ -563,28 +602,26 @@ impl MetaImage {
                 element_spacing: header.element_spacing,
                 element_type: header.element_type,
                 element_byte_order_msb: header.element_byte_order_msb,
+                element_no_of_channels: header.element_no_of_channels,
                 header_size: header.header_size,
                 optional_tags: header.optional_tags,
             },
             data,
         })
     }
+
+    /// Write the MetaImage to a file, automatically choosing between the format (MHA or MHD) and compression options.
     pub fn write(&self, path: impl AsRef<Path>) -> Result<(), MetaImageError> {
         let option = WriteOption::new_auto(path.as_ref(), &self.data);
         self.write_with_option(path, option)
     }
+
+    /// Write with the specified write options.
     pub fn write_with_option(
         &self,
         path: impl AsRef<Path>,
         option: WriteOption,
     ) -> Result<(), MetaImageError> {
-        // let mut option = option;
-        // option.data_file = option.data_file.resolve_auto(path.as_ref());
-        // match option.data_file {
-        //     DataFile::Auto => unreachable!("DataFile::Auto should be resolved"),
-        //     DataFile::Local => self.write_mha_with_option(path, option),
-        //     DataFile::Separate(ref name) => self.write_mhd_with_data_file_path(path, name),
-        // }
         if let Some(ref data_file_name) = option.data_file {
             self.write_mhd_with_option(path, data_file_name, &option)
         } else {
@@ -592,34 +629,7 @@ impl MetaImage {
         }
     }
 
-    // /// Write a combined MetaImage file (.mha).
-    // pub fn write_mha(&self, path: impl AsRef<Path>) -> Result<(), MetaImageError> {
-    //     self.write_mha_with_option(path, &WriteOption::default())
-    // }
-
-    // pub fn write_mhd(&self, header_path: impl AsRef<Path>) -> Result<(), MetaImageError> {
-    // let mut name = header_path
-    //     .as_ref()
-    //     .file_stem()
-    //     .unwrap_or_else(|| std::ffi::OsStr::new("data"))
-    //     .to_os_string();
-    // name.push(".raw");
-    // let name = {
-    //     let mut n = header_path
-    //         .as_ref()
-    //         .file_stem()
-    //         .unwrap_or_else(|| std::ffi::OsStr::new("data"))
-    //         .to_os_string();
-    //     n.push(".raw");
-    //     n
-    // };
-    // let data_file_path = PathBuf::from(name);
-    // let mut option = WriteOption::default();
-    // option.data_file = Some(data_file_path.into_os_string());
-    // self.write_mhd_with_option(header_path, data_file_path, option)
-    // }
-
-    pub fn write_mha_with_option(
+    fn write_mha_with_option(
         &self,
         path: impl AsRef<Path>,
         option: &WriteOption,
@@ -644,7 +654,7 @@ impl MetaImage {
         Ok(())
     }
 
-    pub fn write_mhd_with_option(
+    fn write_mhd_with_option(
         &self,
         header_path: impl AsRef<Path>,
         data_file_name: impl AsRef<Path>,
@@ -892,11 +902,7 @@ fn write_header(
     writeln!(writer, "ObjectType = Image")?;
     writeln!(writer, "NDims = {}", metadata.dims)?;
     writeln!(writer, "DimSize = {dim_size_str}")?;
-    writeln!(
-        writer,
-        "ElementType = {}",
-        format_element_type(metadata.element_type)
-    )?;
+    writeln!(writer, "ElementType = {}", metadata.element_type)?;
     writeln!(writer, "ElementSpacing = {spacing_str}")?;
     writeln!(
         writer,
@@ -907,6 +913,11 @@ fn write_header(
             "False"
         }
     )?;
+    writeln!(
+        writer,
+        "ElementNumberOfChannels = {}",
+        metadata.element_no_of_channels
+    )?;
     writeln!(writer, "BinaryData = True")?;
     writeln!(writer, "HeaderSize = {}", metadata.header_size)?;
     for (key, value) in &metadata.optional_tags {
@@ -914,21 +925,6 @@ fn write_header(
     }
     writeln!(writer, "ElementDataFile = {data_file}")?;
     Ok(())
-}
-
-fn format_element_type(element_type: ElementType) -> &'static str {
-    match element_type {
-        ElementType::UChar => "MET_UCHAR",
-        ElementType::Char => "MET_CHAR",
-        ElementType::UShort => "MET_USHORT",
-        ElementType::Short => "MET_SHORT",
-        ElementType::UInt => "MET_UINT",
-        ElementType::Int => "MET_INT",
-        ElementType::ULong => "MET_ULONG",
-        ElementType::Long => "MET_LONG",
-        ElementType::Float => "MET_FLOAT",
-        ElementType::Double => "MET_DOUBLE",
-    }
 }
 
 #[cfg(test)]
@@ -949,5 +945,24 @@ mod tests {
         let option = WriteOption::new_auto(Path::new("image.mhd"), &data);
         assert_eq!(option.data_file.as_deref(), Some("image.raw"));
         assert!(!option.compress);
+    }
+
+    #[test]
+    fn test_image_with_channels() {
+        let array = ArrayD::from_shape_vec(IxDyn(&[2, 3, 4]), (0u8..24).collect()).unwrap();
+        let image = MetaImage::with_channels(array.clone());
+        assert_eq!(image.metadata.dims, 2);
+        assert_eq!(image.metadata.dim_size, vec![2, 3]);
+        assert_eq!(image.metadata.element_no_of_channels, 4);
+
+        match image.data {
+            PixelData::U8(ref arr) => {
+                assert_eq!(arr.shape(), &[2, 3, 4]);
+                for (a, b) in arr.iter().zip(array.iter()) {
+                    assert_eq!(*a, *b);
+                }
+            }
+            _ => panic!("unexpected pixel data type"),
+        }
     }
 }
