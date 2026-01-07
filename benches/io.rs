@@ -7,6 +7,11 @@ fn tmp_mhd_path(z: usize) -> std::path::PathBuf {
     temp_dir.join(format!("bench_write_{}.mha", z))
 }
 
+fn tmp_non_native_mhd_path(z: usize) -> std::path::PathBuf {
+    let temp_dir = std::env::temp_dir();
+    temp_dir.join(format!("bench_non_native_write_{}.mha", z))
+}
+
 fn tmp_compressed_mhd_path(z: usize) -> std::path::PathBuf {
     let temp_dir = std::env::temp_dir();
     temp_dir.join(format!("bench_compressed_write_{}.mha", z))
@@ -31,6 +36,25 @@ fn read_image(z: usize) {
     let _image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
 }
 
+fn non_native_write(z: usize) {
+    let arr = ndarray::Array3::<u16>::ones((z, 512, 512));
+    let mut image = MetaImage::from_array(arr.into_dyn());
+    image.metadata.element_byte_order_msb = !image.metadata.element_byte_order_msb;
+    let mhd_path = tmp_non_native_mhd_path(z);
+    let option = WriteOption {
+        data_file: None,
+        compress: false,
+    };
+    image
+        .write_with_option(&mhd_path, option)
+        .expect("Failed to write non-native MHD file.");
+}
+
+fn non_native_read(z: usize) {
+    let mhd_path = tmp_non_native_mhd_path(z);
+    let _image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
+}
+
 fn compressed_write(z: usize) {
     let arr = ndarray::Array3::<u16>::zeros((z, 512, 512));
     let image = MetaImage::from_array(arr.into_dyn());
@@ -52,7 +76,13 @@ fn compressed_read(z: usize) {
 fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("io");
     group.bench_function("write", |b| b.iter(|| write_image(black_box(20))));
+    group.bench_function("non-native write", |b| {
+        b.iter(|| non_native_write(black_box(20)))
+    });
     group.bench_function("read", |b| b.iter(|| read_image(black_box(20))));
+    group.bench_function("non-native read", |b| {
+        b.iter(|| non_native_read(black_box(20)))
+    });
     group.bench_function("compressed write", |b| {
         b.iter(|| compressed_write(black_box(20)))
     });

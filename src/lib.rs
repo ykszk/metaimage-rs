@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::vec;
@@ -186,14 +186,7 @@ impl PixelData {
     }
 
     fn to_bytes(&'_ self, msb: bool) -> Cow<'_, [u8]> {
-        if cfg!(target_endian = "big") {
-            unimplemented!("big endian environment not supported yet");
-        }
-        if msb {
-            unimplemented!("writing big endian data not supported yet");
-        }
-
-        match self {
+        let mut bytes = match self {
             Self::U8(arr) => {
                 if let Some(slice) = arr.as_slice() {
                     Cow::Borrowed(slice)
@@ -213,7 +206,30 @@ impl PixelData {
             Self::I32(arr) => Self::_to_bytes(arr),
             Self::F32(arr) => Self::_to_bytes(arr),
             Self::F64(arr) => Self::_to_bytes(arr),
+        };
+        if !is_native_endianness(msb) {
+            let byte_len = match self {
+                Self::U8(_) | Self::I8(_) => 1,
+                Self::U16(_) | Self::I16(_) => 2,
+                Self::U32(_) | Self::I32(_) | Self::F32(_) => 4,
+                Self::F64(_) => 8,
+            };
+            match &mut bytes {
+                Cow::Borrowed(slice) => {
+                    let mut owned = slice.to_vec();
+                    for chunk in owned.chunks_exact_mut(byte_len) {
+                        chunk.reverse();
+                    }
+                    bytes = Cow::Owned(owned);
+                }
+                Cow::Owned(vec) => {
+                    for chunk in vec.chunks_exact_mut(byte_len) {
+                        chunk.reverse();
+                    }
+                }
+            }
         }
+        bytes
     }
 }
 
@@ -362,6 +378,15 @@ fn to_u8_slice<T>(slice: &mut [T]) -> &mut [u8] {
     unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr().cast::<u8>(), byte_len) }
 }
 
+fn is_native_endianness(msb: bool) -> bool {
+    #[allow(clippy::needless_bool)]
+    if msb {
+        cfg!(target_endian = "big")
+    } else {
+        cfg!(target_endian = "little")
+    }
+}
+
 impl MetaImage {
     /// Build a MetaImage from an ndarray of a supported element type.
     pub fn from_array<T: MetaElement>(array: ArrayD<T>) -> Self
@@ -441,19 +466,8 @@ impl MetaImage {
     /// Read a MetaImage from a header (.mhd) or combined (.mha) file.
     pub fn read(path: impl AsRef<Path>) -> Result<Self, MetaImageError> {
         let path = path.as_ref();
-        let file = File::open(path)?;
-        let mut reader = BufReader::new(file);
+        let mut reader = BufReader::new(File::open(path)?);
         let (header, inline_offset) = parse_header(&mut reader)?;
-        if header.element_byte_order_msb && cfg!(target_endian = "little") {
-            return Err(MetaImageError::Unsupported(
-                "big endian data not supported yet".into(),
-            ));
-        }
-        if cfg!(target_endian = "big") {
-            return Err(MetaImageError::Unsupported(
-                "big endian environment not supported yet".into(),
-            ));
-        }
 
         fn read_pixel_data<T: MetaElement + Default + Clone>(
             header: &ParsedHeader,
@@ -476,7 +490,7 @@ impl MetaImage {
                 .iter()
                 .try_fold(1usize, |acc, v| acc.checked_mul(*v).ok_or("overflow"))
                 .map_err(|_| MetaImageError::Shape("dim_size product overflow".into()))?;
-            let raw_data = if let Some(compressed_size) = header.compressed_size {
+            let mut raw_data = if let Some(compressed_size) = header.compressed_size {
                 let mut buf = vec![0u8; compressed_size];
                 let mut reader = reader;
                 if header.element_data_file.eq_ignore_ascii_case("LOCAL") {
@@ -517,6 +531,9 @@ impl MetaImage {
                     MetaImage::typed_read::<T>(data_reader, expected_bytes)?
                 }
             };
+            if !is_native_endianness(header.element_byte_order_msb) {
+                change_endian(&mut raw_data);
+            }
             let array = ArrayD::from_shape_vec(IxDyn(&shape), raw_data)
                 .map_err(|err| MetaImageError::Shape(format!("{err}")))?;
             Ok(PixelData::from(array))
@@ -579,16 +596,16 @@ impl MetaImage {
             encoder.write_all(&self.data.to_bytes(self.metadata.element_byte_order_msb))?;
             let compressed_data = encoder.finish()?;
 
-            let mut header_file = File::create(path)?;
             let metadata = self.metadata.clone().into_compressed(compressed_data.len());
 
-            write_header(&mut header_file, &metadata, "LOCAL")?;
-            header_file.write_all(&compressed_data)?;
+            let mut writer = BufWriter::new(File::create(path)?);
+            write_header(&mut writer, &metadata, "LOCAL")?;
+            writer.write_all(&compressed_data)?;
         } else {
             let path = path.as_ref();
-            let mut file = File::create(path)?;
-            write_header(&mut file, &self.metadata, "LOCAL")?;
-            file.write_all(&self.data.to_bytes(self.metadata.element_byte_order_msb))?;
+            let mut writer = BufWriter::new(File::create(path)?);
+            write_header(&mut writer, &self.metadata, "LOCAL")?;
+            writer.write_all(&self.data.to_bytes(self.metadata.element_byte_order_msb))?;
         }
         Ok(())
     }
@@ -615,12 +632,8 @@ impl MetaImage {
         } else {
             (self.metadata.clone(), Cow::Borrowed(&bytes))
         };
-        let mut header_file = File::create(header_path)?;
-        write_header(
-            &mut header_file,
-            &metadata,
-            &data_file_name.to_string_lossy(),
-        )?;
+        let mut writer = BufWriter::new(File::create(header_path)?);
+        write_header(&mut writer, &metadata, &data_file_name.to_string_lossy())?;
         let mut data_file = File::create(
             header_path
                 .parent()
@@ -629,6 +642,14 @@ impl MetaImage {
         )?;
         data_file.write_all(&data)?;
         Ok(())
+    }
+}
+
+fn change_endian<T>(slice: &mut [T]) {
+    let byte_len = std::mem::size_of::<T>();
+    let u8_slice = to_u8_slice(slice);
+    for chunk in u8_slice.chunks_exact_mut(byte_len) {
+        chunk.reverse();
     }
 }
 

@@ -271,3 +271,79 @@ fn test_itk_vector_image_compatibility() {
         );
     }
 }
+
+#[test]
+fn test_endian() {
+    let temp_dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+
+    let arr = ndarray::Array2::<u16>::from_elem((10, 10), 1);
+    let image: MetaImage = MetaImage::from_array(arr.into_dyn());
+
+    // Write 1u16 in non-native endian
+    let non_native_path = temp_dir.join("non_native_endian_image.mhd");
+    // manually flip the endianness flag
+    let mut non_native_image = image;
+    non_native_image.metadata.element_byte_order_msb =
+        !non_native_image.metadata.element_byte_order_msb;
+    non_native_image
+        .write(&non_native_path)
+        .expect("Failed to write MHD file.");
+
+    // Read non-native endian file normally
+    let result = MetaImage::read(&non_native_path).unwrap();
+    let arr = result.data.as_u16_array().expect("expected u16 data");
+    arr.iter().for_each(|&v| {
+        assert_eq!(v, 1);
+    });
+
+    // Read image with incorrect endianness flag
+    let header = std::fs::read_to_string(&non_native_path).unwrap();
+    #[cfg(target_endian = "big")]
+    let incorrect_header =
+        header.replace("ElementByteOrderMSB = False", "ElementByteOrderMSB = True");
+    #[cfg(target_endian = "little")]
+    let incorrect_header =
+        header.replace("ElementByteOrderMSB = True", "ElementByteOrderMSB = False");
+    std::fs::write(&non_native_path, incorrect_header).unwrap();
+    let result = MetaImage::read(&non_native_path).unwrap();
+    let arr = result.data.as_u16_array().expect("expected u16 data");
+    arr.iter().for_each(|&v| {
+        assert_eq!(v, 1 << 8); // byte swapped
+    });
+
+    // test for u32
+    let arr = ndarray::Array2::<u32>::from_elem((10, 10), 1);
+    let image: MetaImage = MetaImage::from_array(arr.into_dyn());
+
+    // Write
+    let non_native_path = temp_dir.join("non_native_endian_image.mhd");
+    // manually flip the endianness flag
+    let mut non_native_image = image;
+    non_native_image.metadata.element_byte_order_msb =
+        !non_native_image.metadata.element_byte_order_msb;
+    non_native_image
+        .write(&non_native_path)
+        .expect("Failed to write MHD file.");
+
+    // Read non-native endian file normally
+    let result = MetaImage::read(&non_native_path).unwrap();
+    let arr = result.data.as_u32_array().expect("expected u32 data");
+    arr.iter().for_each(|&v| {
+        assert_eq!(v, 1);
+    });
+
+    // Read image with incorrect endianness flag
+    let header = std::fs::read_to_string(&non_native_path).unwrap();
+    #[cfg(target_endian = "big")]
+    let incorrect_header =
+        header.replace("ElementByteOrderMSB = False", "ElementByteOrderMSB = True");
+    #[cfg(target_endian = "little")]
+    let incorrect_header =
+        header.replace("ElementByteOrderMSB = True", "ElementByteOrderMSB = False");
+    std::fs::write(&non_native_path, incorrect_header).unwrap();
+    let result = MetaImage::read(&non_native_path).unwrap();
+    let arr = result.data.as_u32_array().expect("expected u32 data");
+    arr.iter().for_each(|&v| {
+        assert_eq!(v, 1 << 24); // byte reversed
+    });
+}
