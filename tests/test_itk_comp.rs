@@ -99,10 +99,7 @@ fn test_uncontiguous_write() {
     let arr = ndarray::Array2::<u16>::from_shape_vec((10, 10), value_vec).unwrap();
     let arr = arr.permuted_axes([1, 0]); // make it uncontiguous
     let image = MetaImage::from_array(arr.clone().into_dyn());
-    assert!(!match image.data {
-        PixelData::U16(ref a) => a.is_standard_layout(),
-        _ => panic!("expected u16 data"),
-    });
+    assert!(!image.data.as_u16_array().unwrap().is_standard_layout());
     let mhd_path = temp_dir.join("uncontiguous_image.mha");
     image.write(&mhd_path).expect("Failed to write MHD file.");
 
@@ -124,19 +121,18 @@ fn test_uncontiguous_write() {
     let arr = ndarray::Array2::<i8>::from_shape_vec((10, 10), value_vec).unwrap();
     let arr = arr.permuted_axes([1, 0]); // make it uncontiguous
     let image = MetaImage::from_array(arr.clone().into_dyn());
-    assert!(!match image.data {
-        PixelData::I8(ref a) => a.is_standard_layout(),
-        _ => panic!("expected i8 data"),
-    });
+    assert!(!image.data.as_i8_array().unwrap().is_standard_layout());
     let mhd_path = temp_dir.join("uncontiguous_image.mha");
     image.write(&mhd_path).expect("Failed to write MHD file.");
 
     // read back
     let image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
-    let read_vec = match image.data {
-        PixelData::I8(a) => a.into_raw_vec_and_offset().0,
-        _ => panic!("expected i8 data"),
-    };
+    let read_vec = image
+        .data
+        .into_i8_array()
+        .expect("expected i8 data")
+        .into_raw_vec_and_offset()
+        .0;
     let permuted_vec = arr
         .as_standard_layout()
         .to_owned()
@@ -172,9 +168,7 @@ fn test_itk_read_compatibility() {
     }
 
     let image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
-    let PixelData::F32(arr) = image.data else {
-        panic!("expected f32 data");
-    };
+    let arr = image.data.as_f32_array().expect("expected f32 data");
     arr.iter().for_each(|&v| {
         assert_eq!(v, 42.0);
     });
@@ -202,9 +196,7 @@ fn test_itk_read_compatibility() {
     }
 
     let image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
-    let PixelData::U16(arr) = image.data else {
-        panic!("expected uint16 data");
-    };
+    let arr = image.data.as_u16_array().expect("expected u16 data");
     arr.iter().for_each(|&v| {
         assert_eq!(v, 42);
     });
@@ -240,9 +232,7 @@ fn test_itk_vector_image_compatibility() {
     let image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
     let shape = Vec::from(image.data.shape());
     assert_eq!(shape, vec![10, 10, 10, 3]);
-    let PixelData::U8(arr) = image.data else {
-        panic!("expected u8 data");
-    };
+    let arr = image.data.as_u8_array().expect("expected u8 data");
     arr.iter().for_each(|&v| {
         assert_eq!(v, pixel_value);
     });
@@ -258,9 +248,7 @@ fn test_itk_vector_image_compatibility() {
     let image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
     let shape = Vec::from(image.data.shape());
     assert_eq!(shape, vec![10, 10, 10, 3]);
-    let PixelData::U8(arr) = image.data else {
-        panic!("expected u8 data");
-    };
+    let arr = image.data.as_u8_array().expect("expected u8 data");
     arr.iter().for_each(|&v| {
         assert_eq!(v, pixel_value);
     });

@@ -218,11 +218,27 @@ impl PixelData {
 }
 
 macro_rules! impl_into_array {
-    ($method_name:ident, $ty:ty, $variant:ident) => {
+    ($into_name:ident, $as_name:ident,$ty:ty, $variant:ident) => {
         impl PixelData {
-            pub fn $method_name(self) -> Option<ArrayD<$ty>> {
+            /// Extract inner array if the variant matches, otherwise returns None.
+            pub fn $into_name(self) -> Option<ArrayD<$ty>> {
                 match self {
                     Self::$variant(arr) => Some(arr),
+                    _ => None,
+                }
+            }
+            pub fn $as_name(&self) -> Option<&ArrayD<$ty>> {
+                match self {
+                    Self::$variant(arr) => Some(arr),
+                    _ => None,
+                }
+            }
+        }
+        impl From<PixelData> for Option<ArrayD<$ty>> {
+            /// Extract inner array if the variant matches, otherwise returns None.
+            fn from(val: PixelData) -> Self {
+                match val {
+                    PixelData::$variant(arr) => Some(arr),
                     _ => None,
                 }
             }
@@ -230,14 +246,14 @@ macro_rules! impl_into_array {
     };
 }
 
-impl_into_array!(into_u8_array, u8, U8);
-impl_into_array!(into_i8_array, i8, I8);
-impl_into_array!(into_u16_array, u16, U16);
-impl_into_array!(into_i16_array, i16, I16);
-impl_into_array!(into_u32_array, u32, U32);
-impl_into_array!(into_i32_array, i32, I32);
-impl_into_array!(into_f32_array, f32, F32);
-impl_into_array!(into_f64_array, f64, F64);
+impl_into_array!(into_u8_array, as_u8_array, u8, U8);
+impl_into_array!(into_i8_array, as_i8_array, i8, I8);
+impl_into_array!(into_u16_array, as_u16_array, u16, U16);
+impl_into_array!(into_i16_array, as_i16_array, i16, I16);
+impl_into_array!(into_u32_array, as_u32_array, u32, U32);
+impl_into_array!(into_i32_array, as_i32_array, i32, I32);
+impl_into_array!(into_f32_array, as_f32_array, f32, F32);
+impl_into_array!(into_f64_array, as_f64_array, f64, F64);
 
 macro_rules! impl_from_arrayd {
     ($ty:ty, $variant:ident) => {
@@ -273,12 +289,23 @@ pub struct MetaData {
 
 impl MetaData {
     fn into_compressed(mut self, compressed_size: usize) -> Self {
-        self.optional_tags
-            .push(("CompressedData".to_string(), "True".to_string()));
-        self.optional_tags.push((
-            "CompressedDataSize".to_string(),
+        fn update_or_add(tags: &mut Vec<(String, String)>, key: &str, value: String) {
+            if let Some(idx) = tags.iter().position(|(k, _)| k == key) {
+                tags[idx].1 = value;
+            } else {
+                tags.push((key.to_string(), value));
+            }
+        }
+        update_or_add(
+            &mut self.optional_tags,
+            "CompressedData",
+            "True".to_string(),
+        );
+        update_or_add(
+            &mut self.optional_tags,
+            "CompressedDataSize",
             compressed_size.to_string(),
-        ));
+        );
         self
     }
 }
@@ -299,7 +326,7 @@ pub struct WriteOption {
 impl WriteOption {
     /// Automatically determine write option based on path and pixel data.
     /// - If the pixel data is floating-point type, compression is disabled.
-    /// - If the path has `.mhd` extension, data_file is set to the corresponding raw/zraw file name. Otherwise (`.mha`), data_file is None (inline).
+    /// - If the path has `.mhd` extension, data_file is set to the corresponding raw/zraw file name. Otherwise(`.mha` and others), data_file is None and the image is written as a single file.
     pub fn new_auto(path: &Path, data: &PixelData) -> Self {
         let is_float = matches!(
             data.element_type(),
@@ -390,7 +417,7 @@ impl MetaImage {
         }
     }
 
-    pub fn typed_read<T: Default + Clone>(
+    fn typed_read<T: Default + Clone>(
         mut reader: BufReader<File>,
         len_to_read: usize,
     ) -> io::Result<Vec<T>> {
@@ -466,7 +493,6 @@ impl MetaImage {
                     let mut data_reader = BufReader::new(data_file);
                     data_reader.read_exact(&mut buf)?;
                 }
-                assert_eq!(buf.len(), compressed_size);
                 let mut decoder = flate2::read::ZlibDecoder::new(&buf[..]);
                 let mut decompressed_data: Vec<T> = vec![T::default(); element_count];
                 decoder.read_exact(to_u8_slice(&mut decompressed_data))?;
@@ -523,6 +549,7 @@ impl MetaImage {
     }
 
     /// Write the MetaImage to a file, automatically choosing between the format (MHA or MHD) and compression options.
+    /// See [`WriteOption::new_auto`] for the logic.
     pub fn write(&self, path: impl AsRef<Path>) -> Result<(), MetaImageError> {
         let option = WriteOption::new_auto(path.as_ref(), &self.data);
         self.write_with_option(path, option)
