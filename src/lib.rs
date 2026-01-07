@@ -21,8 +21,9 @@ pub enum ElementType {
     Int,
     Float,
     Double,
-    ULong,
-    Long,
+    // Ommit ULong and Long because they are not u64/i64
+    // ULong,
+    // Long,
 }
 
 impl ElementType {
@@ -37,8 +38,6 @@ impl ElementType {
             "MET_INT" | "MET_INT_ARRAY" => Some(Self::Int),
             "MET_FLOAT" | "MET_FLOAT_ARRAY" => Some(Self::Float),
             "MET_DOUBLE" | "MET_DOUBLE_ARRAY" => Some(Self::Double),
-            "MET_ULONG" | "MET_ULONG_ARRAY" => Some(Self::ULong),
-            "MET_LONG" | "MET_LONG_ARRAY" => Some(Self::Long),
             _ => None,
         }
     }
@@ -48,7 +47,7 @@ impl ElementType {
             Self::UChar | Self::Char => 1,
             Self::UShort | Self::Short => 2,
             Self::UInt | Self::Int | Self::Float => 4,
-            Self::ULong | Self::Long | Self::Double => 8,
+            Self::Double => 8,
         }
     }
 }
@@ -64,8 +63,6 @@ impl std::fmt::Display for ElementType {
             Self::Int => "MET_INT",
             Self::Float => "MET_FLOAT",
             Self::Double => "MET_DOUBLE",
-            Self::ULong => "MET_ULONG",
-            Self::Long => "MET_LONG",
         };
         write!(f, "{s}")
     }
@@ -125,8 +122,6 @@ impl_meta_element!(u16, ElementType::UShort);
 impl_meta_element!(i16, ElementType::Short);
 impl_meta_element!(u32, ElementType::UInt);
 impl_meta_element!(i32, ElementType::Int);
-impl_meta_element!(u64, ElementType::ULong);
-impl_meta_element!(i64, ElementType::Long);
 impl_meta_element!(f32, ElementType::Float);
 impl_meta_element!(f64, ElementType::Double);
 
@@ -139,8 +134,6 @@ pub enum PixelData {
     I16(ArrayD<i16>),
     U32(ArrayD<u32>),
     I32(ArrayD<i32>),
-    U64(ArrayD<u64>),
-    I64(ArrayD<i64>),
     F32(ArrayD<f32>),
     F64(ArrayD<f64>),
 }
@@ -154,8 +147,6 @@ impl PixelData {
             Self::I16(_) => ElementType::Short,
             Self::U32(_) => ElementType::UInt,
             Self::I32(_) => ElementType::Int,
-            Self::U64(_) => ElementType::ULong,
-            Self::I64(_) => ElementType::Long,
             Self::F32(_) => ElementType::Float,
             Self::F64(_) => ElementType::Double,
         }
@@ -169,8 +160,6 @@ impl PixelData {
             Self::I16(arr) => arr.shape(),
             Self::U32(arr) => arr.shape(),
             Self::I32(arr) => arr.shape(),
-            Self::U64(arr) => arr.shape(),
-            Self::I64(arr) => arr.shape(),
             Self::F32(arr) => arr.shape(),
             Self::F64(arr) => arr.shape(),
         }
@@ -222,8 +211,6 @@ impl PixelData {
             Self::I16(arr) => Self::_to_bytes(arr),
             Self::U32(arr) => Self::_to_bytes(arr),
             Self::I32(arr) => Self::_to_bytes(arr),
-            Self::U64(arr) => Self::_to_bytes(arr),
-            Self::I64(arr) => Self::_to_bytes(arr),
             Self::F32(arr) => Self::_to_bytes(arr),
             Self::F64(arr) => Self::_to_bytes(arr),
         }
@@ -249,8 +236,6 @@ impl_into_array!(into_u16_array, u16, U16);
 impl_into_array!(into_i16_array, i16, I16);
 impl_into_array!(into_u32_array, u32, U32);
 impl_into_array!(into_i32_array, i32, I32);
-impl_into_array!(into_u64_array, u64, U64);
-impl_into_array!(into_i64_array, i64, I64);
 impl_into_array!(into_f32_array, f32, F32);
 impl_into_array!(into_f64_array, f64, F64);
 
@@ -270,8 +255,6 @@ impl_from_arrayd!(u16, U16);
 impl_from_arrayd!(i16, I16);
 impl_from_arrayd!(u32, U32);
 impl_from_arrayd!(i32, I32);
-impl_from_arrayd!(u64, U64);
-impl_from_arrayd!(i64, I64);
 impl_from_arrayd!(f32, F32);
 impl_from_arrayd!(f64, F64);
 
@@ -520,8 +503,6 @@ impl MetaImage {
             ElementType::Short => read_pixel_data::<i16>(&header, reader, path, inline_offset)?,
             ElementType::UInt => read_pixel_data::<u32>(&header, reader, path, inline_offset)?,
             ElementType::Int => read_pixel_data::<i32>(&header, reader, path, inline_offset)?,
-            ElementType::ULong => read_pixel_data::<u64>(&header, reader, path, inline_offset)?,
-            ElementType::Long => read_pixel_data::<i64>(&header, reader, path, inline_offset)?,
             ElementType::Float => read_pixel_data::<f32>(&header, reader, path, inline_offset)?,
             ElementType::Double => read_pixel_data::<f64>(&header, reader, path, inline_offset)?,
         };

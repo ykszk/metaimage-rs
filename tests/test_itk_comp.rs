@@ -63,8 +63,9 @@ fn test_itk_write_compatibility() {
         .expect("Failed to execute Python script to read the image.");
     if !output.status.success() {
         panic!(
-            "Failed to read the image using SimpleITK. stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "Failed to read the image using SimpleITK. stderr: {}\n stdout: {}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
         );
     }
 
@@ -92,7 +93,6 @@ fn test_itk_write_compatibility() {
 
 #[test]
 fn test_uncontiguous_write() {
-    check_python();
     let temp_dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
 
     let value_vec: Vec<_> = (0u16..100).collect();

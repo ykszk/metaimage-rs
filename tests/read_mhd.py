@@ -22,6 +22,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     for mhd_file_path in args.mhd_file:
+        print(f"Reading file: {mhd_file_path}")
 
         if not os.path.isfile(mhd_file_path):
             print(f"Error: The file {mhd_file_path} does not exist.")
@@ -32,6 +33,7 @@ if __name__ == "__main__":
         image = sitk.ReadImage(mhd_file_path)
 
         # Display some metadata
+        print("Imagee Type:", image.GetPixelIDTypeAsString())
         print("Image Size:", image.GetSize())
         print("Image Spacing:", image.GetSpacing())
         print("Image Origin:", image.GetOrigin())
@@ -53,9 +55,10 @@ if __name__ == "__main__":
         if not np.all(
             arr == args.value
         ):
-            for pix in np.nditer(arr):
+            iter = np.nditer(arr, flags=["multi_index"])
+            for pix in iter:
                 if pix != args.value:
-                    print(f"Found value {pix} which is not equal to expected {args.value}")
+                    print(f"Found value {pix} at {iter.multi_index} which is not equal to expected {args.value}")
                     sys.exit(1)
 
     sys.exit(0)
