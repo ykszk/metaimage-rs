@@ -334,12 +334,12 @@ pub struct MetaImage {
 }
 
 #[derive(Debug, Clone)]
-pub struct WriteOption {
+pub struct WriteOptions {
     pub data_file: Option<String>,
-    pub compress: bool,
+    pub compress: Option<u32>,
 }
 
-impl WriteOption {
+impl WriteOptions {
     /// Automatically determine write option based on path and pixel data.
     /// - If the pixel data is floating-point type, compression is disabled.
     /// - If the path has `.mhd` extension, data_file is set to the corresponding raw/zraw file name. Otherwise(`.mha` and others), data_file is None and the image is written as a single file.
@@ -348,7 +348,7 @@ impl WriteOption {
             data.element_type(),
             ElementType::Float | ElementType::Double
         );
-        let compress = !is_float;
+        let compress = if is_float { None } else { Some(6) };
         let data_file = match path.extension().and_then(|s| s.to_str()) {
             Some("mha") | Some("MHA") => None,
             Some("mhd") | Some("MHD") => {
@@ -356,7 +356,7 @@ impl WriteOption {
                     .file_stem()
                     .unwrap_or_else(|| std::ffi::OsStr::new("data"))
                     .to_os_string();
-                if compress {
+                if compress.is_some() {
                     name.push(".zraw");
                 } else {
                     name.push(".raw");
@@ -566,9 +566,9 @@ impl MetaImage {
     }
 
     /// Write the MetaImage to a file, automatically choosing between the format (MHA or MHD) and compression options.
-    /// See [`WriteOption::new_auto`] for the logic.
+    /// See [`WriteOptions::new_auto`] for the logic.
     pub fn write(&self, path: impl AsRef<Path>) -> Result<(), MetaImageError> {
-        let option = WriteOption::new_auto(path.as_ref(), &self.data);
+        let option = WriteOptions::new_auto(path.as_ref(), &self.data);
         self.write_with_option(path, option)
     }
 
@@ -576,7 +576,7 @@ impl MetaImage {
     pub fn write_with_option(
         &self,
         path: impl AsRef<Path>,
-        option: WriteOption,
+        option: WriteOptions,
     ) -> Result<(), MetaImageError> {
         if let Some(ref data_file_name) = option.data_file {
             self.write_mhd_with_option(path, data_file_name, &option)
@@ -588,11 +588,11 @@ impl MetaImage {
     fn write_mha_with_option(
         &self,
         path: impl AsRef<Path>,
-        option: &WriteOption,
+        option: &WriteOptions,
     ) -> Result<(), MetaImageError> {
-        if option.compress {
+        if let Some(level) = option.compress {
             let mut encoder =
-                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(level));
             encoder.write_all(&self.data.to_bytes(self.metadata.element_byte_order_msb))?;
             let compressed_data = encoder.finish()?;
 
@@ -614,15 +614,15 @@ impl MetaImage {
         &self,
         header_path: impl AsRef<Path>,
         data_file_name: impl AsRef<Path>,
-        option: &WriteOption,
+        option: &WriteOptions,
     ) -> Result<(), MetaImageError> {
         use std::borrow::Cow;
         let header_path = header_path.as_ref();
         let data_file_name = data_file_name.as_ref();
         let bytes = self.data.to_bytes(self.metadata.element_byte_order_msb);
-        let (metadata, data): (MetaData, Cow<[u8]>) = if option.compress {
+        let (metadata, data): (MetaData, Cow<[u8]>) = if let Some(level) = option.compress {
             let mut encoder =
-                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(level));
             encoder.write_all(&bytes)?;
             let compressed_data = encoder.finish()?;
             (
@@ -871,18 +871,18 @@ mod tests {
     #[test]
     fn test_auto_option() {
         let data = PixelData::U16(ArrayD::zeros(IxDyn(&[10, 10])));
-        let option = WriteOption::new_auto(Path::new("image.mha"), &data);
+        let option = WriteOptions::new_auto(Path::new("image.mha"), &data);
         assert!(option.data_file.is_none());
-        assert!(option.compress);
+        assert!(option.compress.is_some());
 
-        let option = WriteOption::new_auto(Path::new("image.mhd"), &data);
+        let option = WriteOptions::new_auto(Path::new("image.mhd"), &data);
         assert_eq!(option.data_file.as_deref(), Some("image.zraw"));
-        assert!(option.compress);
+        assert!(option.compress.is_some());
 
         let data = PixelData::F32(ArrayD::zeros(IxDyn(&[10, 10])));
-        let option = WriteOption::new_auto(Path::new("image.mhd"), &data);
+        let option = WriteOptions::new_auto(Path::new("image.mhd"), &data);
         assert_eq!(option.data_file.as_deref(), Some("image.raw"));
-        assert!(!option.compress);
+        assert!(option.compress.is_none());
     }
 
     #[test]
@@ -902,6 +902,34 @@ mod tests {
             }
             _ => panic!("unexpected pixel data type"),
         }
+    }
+
+    #[test]
+    fn test_change_endian() {
+        // u16
+        let mut data: Vec<u16> = vec![0x1234, 0xABCD, 0x0F0F];
+        change_endian(&mut data);
+        assert_eq!(data, vec![0x3412, 0xCDAB, 0x0F0F]);
+        // u32
+        let mut data: Vec<u32> = vec![0x12345678, 0xABCDEF01];
+        change_endian(&mut data);
+        assert_eq!(data, vec![0x78563412, 0x01EFCDAB]);
+        // f32
+        let mut data: Vec<f32> = vec![1.0, -2.0, 3.0];
+        let expected: Vec<f32> = data
+            .iter()
+            .map(|v| f32::from_bits(v.to_bits().swap_bytes()))
+            .collect();
+        change_endian(&mut data);
+        assert_eq!(data, expected);
+        // f64
+        let mut data: Vec<f64> = vec![1.0, -2.0, 3.0];
+        let expected: Vec<f64> = data
+            .iter()
+            .map(|v| f64::from_bits(v.to_bits().swap_bytes()))
+            .collect();
+        change_endian(&mut data);
+        assert_eq!(data, expected);
     }
 
     #[test]

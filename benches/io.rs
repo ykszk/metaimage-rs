@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use metaimage::{MetaImage, WriteOption};
+use metaimage::{MetaImage, WriteOptions};
 use std::hint::black_box;
 
 fn tmp_mhd_path(z: usize) -> std::path::PathBuf {
@@ -21,9 +21,9 @@ fn write_image(z: usize) {
     let arr = ndarray::Array3::<u16>::zeros((z, 512, 512));
     let image = MetaImage::from_array(arr.into_dyn());
     let mhd_path = tmp_mhd_path(z);
-    let option = WriteOption {
+    let option = WriteOptions {
         data_file: None,
-        compress: false,
+        compress: None,
     };
     image
         .write_with_option(&mhd_path, option)
@@ -41,9 +41,9 @@ fn non_native_write(z: usize) {
     let mut image = MetaImage::from_array(arr.into_dyn());
     image.metadata.element_byte_order_msb = !image.metadata.element_byte_order_msb;
     let mhd_path = tmp_non_native_mhd_path(z);
-    let option = WriteOption {
+    let option = WriteOptions {
         data_file: None,
-        compress: false,
+        compress: None,
     };
     image
         .write_with_option(&mhd_path, option)
@@ -59,9 +59,9 @@ fn compressed_write(z: usize) {
     let arr = ndarray::Array3::<u16>::zeros((z, 512, 512));
     let image = MetaImage::from_array(arr.into_dyn());
     let mhd_path = tmp_compressed_mhd_path(z);
-    let option = WriteOption {
+    let option = WriteOptions {
         data_file: None,
-        compress: true,
+        compress: Some(6),
     };
     image
         .write_with_option(&mhd_path, option)

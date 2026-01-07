@@ -1,11 +1,9 @@
 MetaImage (mhd/mha) file IO library
 
-# References
-- [Specification](https://insightsoftwareconsortium.github.io/ITKWikiArchive/Wiki/ITK/MetaIO/Documentation/#MetaImage)
-
 # Examples
 
 ## Write
+[`MetaImage::write`]
 ```rust
 use metaimage::MetaImage;
 
@@ -30,6 +28,7 @@ assert!(temp_mha_path.exists());
 ```
 
 ## Read
+[`MetaImage::read`]
 ```rust
 use metaimage::MetaImage;
 
@@ -42,6 +41,7 @@ let read_arr = image.data.into_u8_array().unwrap();
 ```
 
 ## RGB image
+[`MetaImage::with_channels`]
 ```rust
 use metaimage::MetaImage;
 
@@ -49,3 +49,6 @@ let arr = ndarray::Array4::<u8>::from_elem((10, 10, 10, 3), 42u8);
 let rgb_image = MetaImage::with_channels(arr.into_dyn());
 assert_eq!(rgb_image.metadata.element_no_of_channels, 3);
 ```
+
+# References
+- [Specification](https://insightsoftwareconsortium.github.io/ITKWikiArchive/Wiki/ITK/MetaIO/Documentation/#MetaImage)
