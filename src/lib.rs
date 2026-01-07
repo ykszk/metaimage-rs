@@ -230,6 +230,30 @@ impl PixelData {
     }
 }
 
+macro_rules! impl_into_array {
+    ($method_name:ident, $ty:ty, $variant:ident) => {
+        impl PixelData {
+            pub fn $method_name(self) -> Option<ArrayD<$ty>> {
+                match self {
+                    Self::$variant(arr) => Some(arr),
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+impl_into_array!(into_u8_array, u8, U8);
+impl_into_array!(into_i8_array, i8, I8);
+impl_into_array!(into_u16_array, u16, U16);
+impl_into_array!(into_i16_array, i16, I16);
+impl_into_array!(into_u32_array, u32, U32);
+impl_into_array!(into_i32_array, i32, I32);
+impl_into_array!(into_u64_array, u64, U64);
+impl_into_array!(into_i64_array, i64, I64);
+impl_into_array!(into_f32_array, f32, F32);
+impl_into_array!(into_f64_array, f64, F64);
+
 macro_rules! impl_from_arrayd {
     ($ty:ty, $variant:ident) => {
         impl From<ArrayD<$ty>> for PixelData {
