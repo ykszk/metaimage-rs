@@ -1,6 +1,6 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 use bytemuck::NoUninit;
-use ndarray::{ArrayD, IxDyn};
+use ndarray::{ArrayD, ArrayViewD, CowArray, IxDyn};
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::{self, Display};
@@ -9,6 +9,8 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::vec;
+
+type CowArrayD<'a, T> = CowArray<'a, T, IxDyn>;
 
 /// Pixel storage type supported by MetaImage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,18 +129,18 @@ impl_meta_element!(f64, ElementType::Double);
 
 /// Generic pixel container backed by ndarray.
 #[derive(Debug, Clone)]
-pub enum PixelData {
-    U8(ArrayD<u8>),
-    I8(ArrayD<i8>),
-    U16(ArrayD<u16>),
-    I16(ArrayD<i16>),
-    U32(ArrayD<u32>),
-    I32(ArrayD<i32>),
-    F32(ArrayD<f32>),
-    F64(ArrayD<f64>),
+pub enum PixelData<'a> {
+    U8(CowArrayD<'a, u8>),
+    I8(CowArrayD<'a, i8>),
+    U16(CowArrayD<'a, u16>),
+    I16(CowArrayD<'a, i16>),
+    U32(CowArrayD<'a, u32>),
+    I32(CowArrayD<'a, i32>),
+    F32(CowArrayD<'a, f32>),
+    F64(CowArrayD<'a, f64>),
 }
 
-impl PixelData {
+impl<'a> PixelData<'a> {
     pub fn element_type(&self) -> ElementType {
         match self {
             Self::U8(_) => ElementType::UChar,
@@ -165,7 +167,7 @@ impl PixelData {
         }
     }
 
-    fn _to_bytes<T: MetaElement + NoUninit>(arr: &'_ ArrayD<T>) -> Cow<'_, [u8]> {
+    fn _to_bytes<'b, T: MetaElement + NoUninit>(arr: &'b CowArrayD<'b, T>) -> Cow<'b, [u8]> {
         if let Some(slice) = arr.as_slice() {
             let bytes = bytemuck::must_cast_slice(slice);
             Cow::Borrowed(bytes)
@@ -235,24 +237,24 @@ impl PixelData {
 
 macro_rules! impl_into_array {
     ($into_name:ident, $as_name:ident,$ty:ty, $variant:ident) => {
-        impl PixelData {
-            /// Extract inner array if the variant matches, otherwise returns None.
+        impl<'a> PixelData<'a> {
+            /// Extract inner array if the variant matches and owned, otherwise returns None.
             pub fn $into_name(self) -> Option<ArrayD<$ty>> {
                 match self {
-                    Self::$variant(arr) => Some(arr),
+                    Self::$variant(arr) if arr.is_owned() => Some(arr.into_owned()),
                     _ => None,
                 }
             }
-            pub fn $as_name(&self) -> Option<&ArrayD<$ty>> {
+            pub fn $as_name(&self) -> Option<ArrayViewD<'_, $ty>> {
                 match self {
-                    Self::$variant(arr) => Some(arr),
+                    Self::$variant(arr) => Some(arr.view()),
                     _ => None,
                 }
             }
         }
-        impl From<PixelData> for Option<ArrayD<$ty>> {
+        impl<'a> From<PixelData<'a>> for Option<CowArrayD<'a, $ty>> {
             /// Extract inner array if the variant matches, otherwise returns None.
-            fn from(val: PixelData) -> Self {
+            fn from(val: PixelData<'a>) -> Self {
                 match val {
                     PixelData::$variant(arr) => Some(arr),
                     _ => None,
@@ -273,8 +275,18 @@ impl_into_array!(into_f64_array, as_f64_array, f64, F64);
 
 macro_rules! impl_from_arrayd {
     ($ty:ty, $variant:ident) => {
-        impl From<ArrayD<$ty>> for PixelData {
+        impl<'a> From<ArrayViewD<'a, $ty>> for PixelData<'a> {
+            fn from(value: ArrayViewD<'a, $ty>) -> Self {
+                Self::$variant(CowArray::from(value))
+            }
+        }
+        impl<'a> From<ArrayD<$ty>> for PixelData<'a> {
             fn from(value: ArrayD<$ty>) -> Self {
+                Self::$variant(CowArray::from(value))
+            }
+        }
+        impl<'a> From<CowArrayD<'a, $ty>> for PixelData<'a> {
+            fn from(value: CowArrayD<'a, $ty>) -> Self {
                 Self::$variant(value)
             }
         }
@@ -328,9 +340,9 @@ impl MetaData {
 
 /// In-memory MetaImage representation.
 #[derive(Debug, Clone)]
-pub struct MetaImage {
+pub struct MetaImage<'a> {
     pub metadata: MetaData,
-    pub data: PixelData,
+    pub data: PixelData<'a>,
 }
 
 #[derive(Debug, Clone)]
@@ -387,13 +399,15 @@ fn is_native_endianness(msb: bool) -> bool {
     }
 }
 
-impl MetaImage {
+impl<'a> MetaImage<'a> {
     /// Build a MetaImage from an ndarray of a supported element type.
-    pub fn from_array<T: MetaElement>(array: ArrayD<T>) -> Self
+    pub fn from_array<T: MetaElement, A>(array: A) -> Self
     where
-        PixelData: From<ArrayD<T>>,
+        PixelData<'a>: From<CowArrayD<'a, T>>,
+        CowArrayD<'a, T>: From<A>,
     {
-        let dim_size = array.shape().to_vec();
+        let data = PixelData::from(CowArrayD::<'a, T>::from(array));
+        let dim_size = data.shape().to_vec();
         let dims = dim_size.len();
         let element_spacing = vec![1.0; dims];
         let element_no_of_channels = 1;
@@ -408,16 +422,18 @@ impl MetaImage {
                 header_size: 0,
                 optional_tags: Vec::new(),
             },
-            data: PixelData::from(array),
+            data,
         }
     }
 
     /// [`MetaImage::from_array`] variant for vector/rgb images, where the last dimension is treated as channels.
-    pub fn with_channels<T: MetaElement>(array: ArrayD<T>) -> Self
+    pub fn with_channels<T: MetaElement, A>(array: A) -> Self
     where
-        PixelData: From<ArrayD<T>>,
+        PixelData<'a>: From<CowArrayD<'a, T>>,
+        CowArrayD<'a, T>: From<A>,
     {
-        let dim_size = array.shape().to_vec();
+        let data = PixelData::from(CowArrayD::<'a, T>::from(array));
+        let dim_size = data.shape().to_vec();
         let dims = dim_size.len();
         let element_no_of_channels = if dims >= 1 { dim_size[dims - 1] } else { 1 };
         let dim_size = if dims >= 1 {
@@ -438,7 +454,7 @@ impl MetaImage {
                 header_size: 0,
                 optional_tags: Vec::new(),
             },
-            data: PixelData::from(array),
+            data,
         }
     }
 
@@ -469,14 +485,14 @@ impl MetaImage {
         let mut reader = BufReader::new(File::open(path)?);
         let (header, inline_offset) = parse_header(&mut reader)?;
 
-        fn read_pixel_data<T: MetaElement + Default + Clone>(
+        fn read_pixel_data<'b, T: MetaElement + Default + Clone>(
             header: &ParsedHeader,
             reader: BufReader<File>,
             path: &Path,
             inline_offset: Option<usize>,
-        ) -> Result<PixelData, MetaImageError>
+        ) -> Result<PixelData<'b>, MetaImageError>
         where
-            PixelData: From<ArrayD<T>>,
+            PixelData<'b>: From<ArrayD<T>>,
         {
             let shape = if header.element_no_of_channels > 1 {
                 let mut s = header.dim_size.clone();
@@ -870,7 +886,7 @@ mod tests {
     use super::*;
     #[test]
     fn test_auto_option() {
-        let data = PixelData::U16(ArrayD::zeros(IxDyn(&[10, 10])));
+        let data = PixelData::from(ArrayD::<u16>::zeros(IxDyn(&[10, 10])));
         let option = WriteOptions::new_auto(Path::new("image.mha"), &data);
         assert!(option.data_file.is_none());
         assert!(option.compress.is_some());
@@ -879,7 +895,7 @@ mod tests {
         assert_eq!(option.data_file.as_deref(), Some("image.zraw"));
         assert!(option.compress.is_some());
 
-        let data = PixelData::F32(ArrayD::zeros(IxDyn(&[10, 10])));
+        let data = PixelData::from(ArrayD::<f32>::zeros(IxDyn(&[10, 10])));
         let option = WriteOptions::new_auto(Path::new("image.mhd"), &data);
         assert_eq!(option.data_file.as_deref(), Some("image.raw"));
         assert!(option.compress.is_none());
@@ -934,7 +950,7 @@ mod tests {
 
     #[test]
     fn test_optional_tags() {
-        let image = MetaImage::from_array(ArrayD::<u8>::zeros(IxDyn(&[2, 2])));
+        let image = MetaImage::from_array(ArrayD::<u8>::zeros(IxDyn(&[10, 10])));
         let mut metadata = image.metadata;
         metadata
             .optional_tags

@@ -1,4 +1,4 @@
-use metaimage::{MetaImage, PixelData};
+use metaimage::MetaImage;
 use ndarray::Array3;
 use std::path::Path;
 
@@ -98,17 +98,19 @@ fn test_uncontiguous_write() {
     let value_vec: Vec<_> = (0u16..100).collect();
     let arr = ndarray::Array2::<u16>::from_shape_vec((10, 10), value_vec).unwrap();
     let arr = arr.permuted_axes([1, 0]); // make it uncontiguous
-    let image = MetaImage::from_array(arr.clone().into_dyn());
+    let image = MetaImage::from_array(arr.view().into_dyn());
     assert!(!image.data.as_u16_array().unwrap().is_standard_layout());
     let mhd_path = temp_dir.join("uncontiguous_image.mha");
     image.write(&mhd_path).expect("Failed to write MHD file.");
 
     // read back
     let image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
-    let read_vec = match image.data {
-        PixelData::U16(a) => a.into_raw_vec_and_offset().0,
-        _ => panic!("expected u16 data"),
-    };
+    let read_vec = image
+        .data
+        .into_u16_array()
+        .expect("expected u16 data")
+        .into_raw_vec_and_offset()
+        .0;
     let permuted_vec = arr
         .as_standard_layout()
         .to_owned()
