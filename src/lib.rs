@@ -942,13 +942,17 @@ fn write_header(
             "False"
         }
     )?;
-    writeln!(
-        writer,
-        "ElementNumberOfChannels = {}",
-        metadata.element_no_of_channels
-    )?;
+    if metadata.element_no_of_channels != 1 {
+        writeln!(
+            writer,
+            "ElementNumberOfChannels = {}",
+            metadata.element_no_of_channels
+        )?;
+    }
     writeln!(writer, "BinaryData = True")?;
-    writeln!(writer, "HeaderSize = {}", metadata.header_size)?;
+    if metadata.header_size != 0 {
+        writeln!(writer, "HeaderSize = {}", metadata.header_size)?;
+    }
     for (key, value) in &metadata.optional_tags {
         writeln!(writer, "{} = {}", key, value)?;
     }
