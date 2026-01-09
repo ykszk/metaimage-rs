@@ -1,5 +1,6 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 use bytemuck::NoUninit;
+pub use ndarray;
 use ndarray::{ArrayD, ArrayViewD, CowArray, IxDyn};
 use std::borrow::Cow;
 use std::error::Error;
@@ -399,6 +400,80 @@ fn is_native_endianness(msb: bool) -> bool {
     }
 }
 
+pub trait WriteMhd<'a, A, P: AsRef<Path>> {
+    fn write_mhd(array: A, path: P) -> Result<(), MetaImageError>;
+}
+
+macro_rules! impl_from_ndarray {
+    ($array_ty:ident, $view_ty:ident) => {
+        impl<'a, T: MetaElement> From<ndarray::$array_ty<T>> for MetaImage<'a>
+        where
+            PixelData<'a>: From<CowArrayD<'a, T>>,
+        {
+            fn from(array: ndarray::$array_ty<T>) -> Self {
+                MetaImage::from_array(array.into_dyn())
+            }
+        }
+        impl<'a, T: MetaElement> From<ndarray::$view_ty<'a, T>> for MetaImage<'a>
+        where
+            PixelData<'a>: From<CowArrayD<'a, T>>,
+        {
+            fn from(array: ndarray::$view_ty<'a, T>) -> Self {
+                MetaImage::from_array(array.into_dyn())
+            }
+        }
+        impl<'a, T: MetaElement, P: AsRef<Path>> WriteMhd<'a, ndarray::$view_ty<'a, T>, P>
+            for MetaImage<'a>
+        where
+            PixelData<'a>: From<CowArrayD<'a, T>>,
+        {
+            fn write_mhd(array: ndarray::$view_ty<'a, T>, path: P) -> Result<(), MetaImageError> {
+                let img = MetaImage::from_array(array.into_dyn());
+                img.write(path)
+            }
+        }
+    };
+}
+
+impl_from_ndarray!(Array1, ArrayView1);
+impl_from_ndarray!(Array2, ArrayView2);
+impl_from_ndarray!(Array3, ArrayView3);
+impl_from_ndarray!(Array4, ArrayView4);
+impl_from_ndarray!(Array5, ArrayView5);
+impl_from_ndarray!(Array6, ArrayView6);
+
+pub trait WithChannels<'a, A> {
+    fn with_channels(array: A) -> MetaImage<'a>;
+}
+
+macro_rules! impl_with_channels_ndarray {
+    ($array_ty:ident, $view_ty:ident) => {
+        impl<'a, T: MetaElement> WithChannels<'a, ndarray::$array_ty<T>> for MetaImage<'a>
+        where
+            PixelData<'a>: From<CowArrayD<'a, T>>,
+        {
+            fn with_channels(array: ndarray::$array_ty<T>) -> MetaImage<'a> {
+                MetaImage::from_array_with_channels(array.into_dyn())
+            }
+        }
+        impl<'a, T: MetaElement> WithChannels<'a, ndarray::$view_ty<'a, T>> for MetaImage<'a>
+        where
+            PixelData<'a>: From<CowArrayD<'a, T>>,
+        {
+            fn with_channels(array: ndarray::$view_ty<'a, T>) -> MetaImage<'a> {
+                MetaImage::from_array_with_channels(array.into_dyn())
+            }
+        }
+    };
+}
+
+impl_with_channels_ndarray!(Array1, ArrayView1);
+impl_with_channels_ndarray!(Array2, ArrayView2);
+impl_with_channels_ndarray!(Array3, ArrayView3);
+impl_with_channels_ndarray!(Array4, ArrayView4);
+impl_with_channels_ndarray!(Array5, ArrayView5);
+impl_with_channels_ndarray!(Array6, ArrayView6);
+
 impl<'a> MetaImage<'a> {
     /// Build a MetaImage from an ndarray of a supported element type.
     pub fn from_array<T: MetaElement, A>(array: A) -> Self
@@ -427,7 +502,7 @@ impl<'a> MetaImage<'a> {
     }
 
     /// [`MetaImage::from_array`] variant for vector/rgb images, where the last dimension is treated as channels.
-    pub fn with_channels<T: MetaElement, A>(array: A) -> Self
+    pub fn from_array_with_channels<T: MetaElement, A>(array: A) -> Self
     where
         PixelData<'a>: From<CowArrayD<'a, T>>,
         CowArrayD<'a, T>: From<A>,
@@ -904,7 +979,7 @@ mod tests {
     #[test]
     fn test_image_with_channels() {
         let array = ArrayD::from_shape_vec(IxDyn(&[2, 3, 4]), (0u8..24).collect()).unwrap();
-        let image = MetaImage::with_channels(array.clone());
+        let image = MetaImage::from_array_with_channels(array.clone());
         assert_eq!(image.metadata.dims, 2);
         assert_eq!(image.metadata.dim_size, vec![2, 3]);
         assert_eq!(image.metadata.element_no_of_channels, 4);

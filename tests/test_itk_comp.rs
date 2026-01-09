@@ -1,4 +1,4 @@
-use metaimage::MetaImage;
+use metaimage::{MetaImage, WithChannels};
 use ndarray::Array3;
 use std::path::Path;
 
@@ -98,7 +98,7 @@ fn test_uncontiguous_write() {
     let value_vec: Vec<_> = (0u16..100).collect();
     let arr = ndarray::Array2::<u16>::from_shape_vec((10, 10), value_vec).unwrap();
     let arr = arr.permuted_axes([1, 0]); // make it uncontiguous
-    let image = MetaImage::from_array(arr.view().into_dyn());
+    let image = MetaImage::from(arr.view());
     assert!(!image.data.as_u16_array().unwrap().is_standard_layout());
     let mhd_path = temp_dir.join("uncontiguous_image.mha");
     image.write(&mhd_path).expect("Failed to write MHD file.");
@@ -122,7 +122,7 @@ fn test_uncontiguous_write() {
     let value_vec: Vec<i8> = (-50..50).collect();
     let arr = ndarray::Array2::<i8>::from_shape_vec((10, 10), value_vec).unwrap();
     let arr = arr.permuted_axes([1, 0]); // make it uncontiguous
-    let image = MetaImage::from_array(arr.clone().into_dyn());
+    let image = MetaImage::from(arr.view());
     assert!(!image.data.as_i8_array().unwrap().is_standard_layout());
     let mhd_path = temp_dir.join("uncontiguous_image.mha");
     image.write(&mhd_path).expect("Failed to write MHD file.");
@@ -242,7 +242,7 @@ fn test_itk_vector_image_compatibility() {
     // test write
     let pixel_value = 128u8;
     let arr = ndarray::Array4::<u8>::from_elem((10, 10, 10, 3), pixel_value);
-    let image = MetaImage::with_channels(arr.into_dyn());
+    let image = MetaImage::with_channels(arr);
     let mhd_path = temp_dir.join("itk_test_vector_image_write.mhd");
     image.write(&mhd_path).expect("Failed to write MHD file.");
 
@@ -279,7 +279,7 @@ fn test_endian() {
     let temp_dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
 
     let arr = ndarray::Array2::<u16>::from_elem((10, 10), 1);
-    let image: MetaImage = MetaImage::from_array(arr.into_dyn());
+    let image: MetaImage = MetaImage::from(arr.view());
 
     // Write 1u16 in non-native endian
     let non_native_path = temp_dir.join("non_native_endian_image.mhd");
@@ -315,7 +315,7 @@ fn test_endian() {
 
     // test for u32
     let arr = ndarray::Array2::<u32>::from_elem((10, 10), 1);
-    let image: MetaImage = MetaImage::from_array(arr.into_dyn());
+    let image: MetaImage = MetaImage::from(arr.view());
 
     // Write
     let non_native_path = temp_dir.join("non_native_endian_image.mhd");

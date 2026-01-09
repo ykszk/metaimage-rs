@@ -5,13 +5,17 @@ MetaImage (mhd/mha) file IO library
 ## Write
 [`MetaImage::write`]
 ```rust
-use metaimage::MetaImage;
+use metaimage::{MetaImage, WriteMhd};
 
 let temp_path = std::env::temp_dir().join("image.mhd");
 let arr = ndarray::Array3::<u8>::from_elem((10, 10, 10), 42u8);
 
+// Simplest write
+MetaImage::write_mhd(arr.view(), &temp_path).unwrap();
+assert!(temp_path.exists());
+
 // Create a MetaImage from an array
-let image = MetaImage::from_array(arr.into_dyn());
+let image = MetaImage::from(arr);
 
 // Write
 assert!(image.write(&temp_path).is_ok());
@@ -43,10 +47,10 @@ let read_arr = image.data.into_u8_array().unwrap();
 ## RGB image
 [`MetaImage::with_channels`]
 ```rust
-use metaimage::MetaImage;
+use metaimage::{MetaImage, WithChannels};
 
 let arr = ndarray::Array4::<u8>::from_elem((10, 10, 10, 3), 42u8);
-let rgb_image = MetaImage::with_channels(arr.into_dyn());
+let rgb_image = MetaImage::with_channels(arr);
 assert_eq!(rgb_image.metadata.element_no_of_channels, 3);
 ```
 
