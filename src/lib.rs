@@ -168,7 +168,7 @@ impl<'a> PixelData<'a> {
         }
     }
 
-    fn _to_bytes<'b, T: MetaElement + NoUninit>(arr: &'b CowArrayD<'b, T>) -> Cow<'b, [u8]> {
+    fn _to_bytes<'b, 'c, T: MetaElement + NoUninit>(arr: &'b CowArrayD<'c, T>) -> Cow<'b, [u8]> {
         if let Some(slice) = arr.as_slice() {
             let bytes = bytemuck::must_cast_slice(slice);
             Cow::Borrowed(bytes)
@@ -188,7 +188,7 @@ impl<'a> PixelData<'a> {
         }
     }
 
-    fn to_bytes(&'_ self, msb: bool) -> Cow<'_, [u8]> {
+    fn to_bytes(&self, msb: bool) -> Cow<'_, [u8]> {
         let mut bytes = match self {
             Self::U8(arr) => {
                 if let Some(slice) = arr.as_slice() {
