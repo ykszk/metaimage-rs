@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.deps }} deps)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        deps: [minimal, latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install nightly toolchain (for minimal-versions resolution)
+        if: matrix.deps == 'minimal'
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.deps }}
+
+      - name: Install cargo-minimal-versions
+        if: matrix.deps == 'minimal'
+        run: cargo install cargo-minimal-versions cargo-hack
+
+      - name: Resolve to minimal dependency versions
+        if: matrix.deps == 'minimal'
+        run: cargo minimal-versions test --workspace
+
+      - name: Resolve to latest dependency versions
+        if: matrix.deps == 'latest'
+        run: |
+          cargo update
+          cargo test --workspace
+
+  itk-compat:
+    name: ITK compatibility tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Install SimpleITK
+        run: pip install numpy SimpleITK
+
+      - name: Run ITK compatibility tests
+        run: cargo test --workspace -- --ignored
