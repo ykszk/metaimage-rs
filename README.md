@@ -34,9 +34,11 @@ assert!(temp_mha_path.exists());
 ## Read
 [`MetaImage::read`]
 ```rust
-use metaimage::MetaImage;
+use metaimage::{MetaImage, WriteMhd};
 
-let temp_path = std::env::temp_dir().join("image.mhd");
+let temp_path = std::env::temp_dir().join("image_read_example.mhd");
+let arr = ndarray::Array3::<u8>::from_elem((10, 10, 10), 42u8);
+MetaImage::write_mhd(arr.view(), &temp_path).unwrap();
 
 // Read
 let image = MetaImage::read(&temp_path).unwrap();
