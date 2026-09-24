@@ -482,7 +482,8 @@ impl<'a> MetaImage<'a> {
         CowArrayD<'a, T>: From<A>,
     {
         let data = PixelData::from(CowArrayD::<'a, T>::from(array));
-        let dim_size = data.shape().to_vec();
+        // reverse the shape from row-major to column-major order (zyx -> xyz)
+        let dim_size = data.shape().to_vec().into_iter().rev().collect::<Vec<_>>();
         let dims = dim_size.len();
         let element_spacing = vec![1.0; dims];
         let element_no_of_channels = 1;
@@ -508,11 +509,13 @@ impl<'a> MetaImage<'a> {
         CowArrayD<'a, T>: From<A>,
     {
         let data = PixelData::from(CowArrayD::<'a, T>::from(array));
-        let dim_size = data.shape().to_vec();
+        // reverse the shape from row-major to column-major order (zyx -> xyz)
+        let dim_size = data.shape().to_vec().into_iter().rev().collect::<Vec<_>>();
         let dims = dim_size.len();
-        let element_no_of_channels = if dims >= 1 { dim_size[dims - 1] } else { 1 };
+        // Use innermost dimension as channels
+        let element_no_of_channels = dim_size[0];
         let dim_size = if dims >= 1 {
-            dim_size[..dims - 1].to_vec()
+            dim_size[1..].to_vec()
         } else {
             vec![]
         };
@@ -569,12 +572,11 @@ impl<'a> MetaImage<'a> {
         where
             PixelData<'b>: From<ArrayD<T>>,
         {
-            let shape = if header.element_no_of_channels > 1 {
-                let mut s = header.dim_size.clone();
-                s.push(header.element_no_of_channels);
-                s
-            } else {
-                header.dim_size.clone()
+            let mut shape = header.dim_size.clone();
+            // reverse the shape from column-major to row-major order (xyz -> zyx)
+            shape.reverse();
+            if header.element_no_of_channels > 1 {
+                shape.push(header.element_no_of_channels);
             };
 
             let element_count = shape
@@ -982,15 +984,15 @@ mod tests {
 
     #[test]
     fn test_image_with_channels() {
-        let array = ArrayD::from_shape_vec(IxDyn(&[2, 3, 4]), (0u8..24).collect()).unwrap();
+        let array = ArrayD::from_shape_vec(IxDyn(&[5, 4, 3]), (0u8..60).collect()).unwrap();
         let image = MetaImage::from_array_with_channels(array.clone());
         assert_eq!(image.metadata.dims, 2);
-        assert_eq!(image.metadata.dim_size, vec![2, 3]);
-        assert_eq!(image.metadata.element_no_of_channels, 4);
+        assert_eq!(image.metadata.dim_size, vec![4, 5]);
+        assert_eq!(image.metadata.element_no_of_channels, 3);
 
         match image.data {
             PixelData::U8(ref arr) => {
-                assert_eq!(arr.shape(), &[2, 3, 4]);
+                assert_eq!(arr.shape(), &[5, 4, 3]);
                 for (a, b) in arr.iter().zip(array.iter()) {
                     assert_eq!(*a, *b);
                 }

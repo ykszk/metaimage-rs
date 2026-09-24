@@ -144,6 +144,32 @@ fn test_uncontiguous_write() {
 }
 
 #[test]
+fn test_3d() {
+    let temp_dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+
+    let value_vec: Vec<_> = (0u16..1000).collect();
+    let arr = ndarray::Array3::<u16>::from_shape_vec((10, 10, 10), value_vec).unwrap();
+    let image = MetaImage::from(arr.view());
+    let mhd_path = temp_dir.join("3d_image.mha");
+    image.write(&mhd_path).expect("Failed to write MHD file.");
+
+    // read back
+    let image = MetaImage::read(&mhd_path).expect("Failed to read MHD file.");
+    let read_vec = image
+        .data
+        .into_u16_array()
+        .expect("expected u16 data")
+        .into_raw_vec_and_offset()
+        .0;
+    let permuted_vec = arr
+        .as_standard_layout()
+        .to_owned()
+        .into_raw_vec_and_offset()
+        .0;
+    assert_eq!(read_vec, permuted_vec);
+}
+
+#[test]
 #[ignore = "Testing the compatiblity with ITK is skipped. Run tests with `--include-ignored` to enable it."]
 fn test_itk_read_compatibility() {
     check_python();
